@@ -1,0 +1,22 @@
+# portfolio.yaml
+# Configuration for the portfolio construction tool.
+
+# Strategies to include in the portfolio.
+# Each entry requires a name and a results file.
+strategies:
+  - name: strategy_a
+    results_file: data/strategy_a.csv
+  - name: strategy_b
+    results_file: data/strategy_b.csv
+  - name: strategy_c
+    results_file: data/strategy_c.csv
+
+# Portfolio-level risk parameters.
+risk:
+  target_annual_volatility_pct: 15.0  # Target portfolio volatility (%)
+  max_drawdown_pct: 20.0              # Maximum allowed portfolio drawdown (%)
+  max_position_weight_pct: 40.0       # Maximum weight for any single strategy (%)
+  rebalance_frequency: monthly        # How often to rebalance (daily/weekly/monthly)
+
+# Output directory for portfolio reports and weight files.
+output_dir: data/
