@@ -1,0 +1,20 @@
+# analyze_live.yaml
+# Configuration for the live results analysis tool.
+
+# Path to the live trading results file (CSV or Excel).
+live_results_file: data/live_results.csv
+
+# Optional: path to a backtest file to compare against.
+backtest_file: data/backtest_v1.csv
+
+# Output directory for analysis reports and charts.
+output_dir: data/
+
+# Metrics to include in the analysis report.
+metrics:
+  - total_return
+  - annualised_return
+  - max_drawdown
+  - sharpe_ratio
+  - win_rate
+  - profit_factor

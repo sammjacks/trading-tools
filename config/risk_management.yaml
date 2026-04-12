@@ -1,0 +1,20 @@
+# risk_management.yaml
+# Configuration for the risk management tool.
+
+# Strategies to apply risk limits to.
+# Each entry requires a name and a results file.
+strategies:
+  - name: strategy_a
+    results_file: data/strategy_a.csv
+  - name: strategy_b
+    results_file: data/strategy_b.csv
+
+# Risk limits applied to each strategy.
+risk_limits:
+  max_drawdown_pct: 20.0        # Maximum allowed drawdown (%)
+  max_daily_loss_pct: 2.0       # Maximum allowed daily loss (%)
+  position_size_pct: 2.0        # Default position size as % of account
+  max_open_positions: 5         # Maximum number of open positions
+
+# Output directory for risk reports.
+output_dir: data/

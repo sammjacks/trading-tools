@@ -1,0 +1,3 @@
+# Keep this directory tracked by git.
+# Place input CSV/Excel files and output reports here.
+# This directory is excluded from git (see .gitignore).

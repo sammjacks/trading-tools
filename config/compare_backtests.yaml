@@ -1,0 +1,21 @@
+# compare_backtests.yaml
+# Configuration for the backtest comparison tool.
+
+# Paths to the backtest result files to compare (CSV or Excel).
+backtest_files:
+  - data/backtest_v1.csv
+  - data/backtest_v2.csv
+
+# Output directory for comparison reports and charts.
+output_dir: data/
+
+# Metrics to include in the comparison report.
+metrics:
+  - total_return
+  - annualised_return
+  - max_drawdown
+  - sharpe_ratio
+  - sortino_ratio
+  - calmar_ratio
+  - win_rate
+  - profit_factor
