@@ -20,6 +20,8 @@ REM    - SPREAD ALL: only open ANY trade (including subsequent
 REM      basket legs) if spread <= X pips.
 REM    - DAY-OF-WEEK: skip baskets that would open on certain
 REM      days (e.g. avoid Monday or Friday).
+REM    - BASKET SL: optionally test one or more basket stop levels.
+REM    - EOD CLOSE: optionally test forced end-of-day basket close.
 REM
 REM  The tool uses tick data for accurate spread measurement at
 REM  each trade's exact entry timestamp. M1 bar data is used for
@@ -86,6 +88,20 @@ REM  Available: none, no-mon, no-fri, no-mon-fri, no-fri-sun
 set DAY_OPTIONS=none no-mon no-fri no-mon-fri
 
 REM ═══════════════════════════════════════════════════════════════
+REM  STAGE 2 OPTIONS — basket SL and EOD in the optimization grid
+REM ═══════════════════════════════════════════════════════════════
+REM  Basket SL values in pips. Use 0 to include the no-SL baseline.
+REM  Keep this list fairly short so the search stays fast.
+
+set FILTER_SL_VALUES=0 8 10 12 15
+
+REM  EOD modes to test: 0=off, 1=on
+set FILTER_EOD_OPTIONS=0 1
+
+REM  Broker-local EOD close time used when EOD mode is on
+set EOD_TIME=23:59
+
+REM ═══════════════════════════════════════════════════════════════
 REM  DISPLAY
 REM ═══════════════════════════════════════════════════════════════
 
@@ -119,6 +135,9 @@ set CMD=%CMD% --filter-optimize
 set CMD=%CMD% --session-step %SESSION_STEP% --min-session-width %MIN_SESSION_WIDTH%
 set CMD=%CMD% --spread-values %SPREAD_VALUES%
 set CMD=%CMD% --day-options %DAY_OPTIONS%
+set CMD=%CMD% --filter-sl-values %FILTER_SL_VALUES%
+set CMD=%CMD% --filter-eod-options %FILTER_EOD_OPTIONS%
+set CMD=%CMD% --eod-time %EOD_TIME%
 set CMD=%CMD% --top-results %TOP_RESULTS%
 
 if not "%SYMBOL%"=="" set CMD=%CMD% --symbol %SYMBOL%

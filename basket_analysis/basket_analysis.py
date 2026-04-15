@@ -2010,48 +2010,91 @@ _DAY_FILTER_MAP = {
 }
 
 
+def _coerce_eod_flag(value) -> bool:
+    """Parse user-supplied EOD option values like 0/1, off/on, false/true."""
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    return s in {"1", "on", "true", "yes", "y"}
+
+
 def generate_filter_grid(session_step: int, min_session_width: int,
                           spread_values: List[float],
-                          day_options: List[str]) -> List[Dict]:
+                          day_options: List[str],
+                          sl_values: Optional[List[float]] = None,
+                          eod_options: Optional[List[object]] = None) -> List[Dict]:
     """Build the list of filter parameter dicts to test."""
     # Session windows
     session_combos: List[Tuple[Optional[int], Optional[int]]] = [(None, None)]
     for start in range(0, 24, session_step):
         for end in range(start + min_session_width, 25, session_step):
-            if end > 24: break
+            if end > 24:
+                break
             session_combos.append((start, end))
 
     # Spread pairs: (initial, all). None = no filter. 0 in input = None.
     nz = sorted(v for v in spread_values if v > 0)
     spread_combos: List[Tuple[Optional[float], Optional[float]]] = [(None, None)]
-    for si in nz: spread_combos.append((si, None))
-    for sa in nz: spread_combos.append((None, sa))
+    for si in nz:
+        spread_combos.append((si, None))
+    for sa in nz:
+        spread_combos.append((None, sa))
     for si in nz:
         for sa in nz:
-            if sa >= si: spread_combos.append((si, sa))
+            if sa >= si:
+                spread_combos.append((si, sa))
 
     day_combos = []
     for d in day_options:
         k = d.strip().lower()
-        if k in _DAY_FILTER_MAP: day_combos.append((k, _DAY_FILTER_MAP[k]))
-    if not day_combos: day_combos = [("none", set())]
+        if k in _DAY_FILTER_MAP:
+            day_combos.append((k, _DAY_FILTER_MAP[k]))
+    if not day_combos:
+        day_combos = [("none", set())]
+
+    sl_combos: List[Optional[float]] = [None]
+    if sl_values:
+        for v in sorted(set(float(x) for x in sl_values if float(x) > 0)):
+            sl_combos.append(v)
+
+    eod_combos: List[bool] = [False]
+    if eod_options:
+        parsed: List[bool] = []
+        for raw in eod_options:
+            flag = _coerce_eod_flag(raw)
+            if flag not in parsed:
+                parsed.append(flag)
+        if parsed:
+            eod_combos = parsed
 
     grid: List[Dict] = []
     for ss, se in session_combos:
         for spr_i, spr_a in spread_combos:
             for day_lbl, day_set in day_combos:
-                grid.append({
-                    "session_start": ss, "session_end": se,
-                    "max_spread_initial": spr_i, "max_spread_all": spr_a,
-                    "skip_days": day_set, "day_label": day_lbl,
-                })
+                for sl_pips in sl_combos:
+                    for use_eod in eod_combos:
+                        grid.append({
+                            "session_start": ss,
+                            "session_end": se,
+                            "max_spread_initial": spr_i,
+                            "max_spread_all": spr_a,
+                            "skip_days": day_set,
+                            "day_label": day_lbl,
+                            "sl_pips": sl_pips,
+                            "use_eod": use_eod,
+                        })
     return grid
 
 
 def _fmt_session(s, e):
     return "all" if s is None else f"{s:02d}-{e:02d}h"
 
+
 def _fmt_spread(v):
+    return "—" if v is None else f"{v:.1f}p"
+
+
+def _fmt_sl(v):
     return "—" if v is None else f"{v:.1f}p"
 
 
@@ -2060,7 +2103,13 @@ def run_filter_optimization(
         bars: List[Dict], balance_ops: List[Dict],
         grid: List[Dict],
         benchmark_net: float, benchmark_dd: float,
-        top_n: int = 20) -> Tuple[List[Dict], Dict]:
+        top_n: int = 20,
+        broker_gmt: int = 2,
+        pip_size: float = 0.0001,
+        eod_hour: int = 23,
+        eod_minute: int = 59,
+        spread_profile: Optional[Dict[int, float]] = None,
+        close_window_seconds: int = 10) -> Tuple[List[Dict], Dict]:
     """Run the filter grid search.  Returns (top_results, summary).
 
     Deduplicates results that produce identical outcomes (same trades,
@@ -2068,6 +2117,8 @@ def run_filter_optimization(
     so the top-N list shows genuinely different strategies.
     """
     results: List[Dict] = []
+    bar_ts = [b["ts"] for b in bars]
+
     for params in grid:
         filt = apply_trade_filters(
             trades, baskets,
@@ -2075,22 +2126,44 @@ def run_filter_optimization(
             params["max_spread_initial"], params["max_spread_all"],
             params["skip_days"],
         )
-        stats = fast_realized_stats(filt)
-        net = stats["net"]; dd = stats["max_dd"]
+
+        filt_baskets = make_baskets(filt, close_window_seconds) if filt else []
+        result_trades = filt
+
+        if filt_baskets and (params.get("sl_pips") is not None or params.get("use_eod")):
+            sim_sl = params["sl_pips"] if params.get("sl_pips") is not None else 1e9
+            result_trades, _ = build_synthetic_trades(
+                filt_baskets, bars, bar_ts, sim_sl, params.get("use_eod", False),
+                broker_gmt, pip_size, eod_hour, eod_minute, spread_profile
+            )
+
+        stats = fast_realized_stats(result_trades)
+        net = stats["net"]
+        dd = stats["max_dd"]
         ret_dd = net / dd if dd > 0 else (float("inf") if net > 0 else 0.0)
+
         # Count how many filters are actually active (for simplicity ranking)
         n_active = 0
-        if params["session_start"] is not None: n_active += 1
-        if params["max_spread_initial"] is not None: n_active += 1
-        if params["max_spread_all"] is not None: n_active += 1
-        if params["skip_days"]: n_active += 1
+        if params["session_start"] is not None:
+            n_active += 1
+        if params["max_spread_initial"] is not None:
+            n_active += 1
+        if params["max_spread_all"] is not None:
+            n_active += 1
+        if params["skip_days"]:
+            n_active += 1
+        if params.get("sl_pips") is not None:
+            n_active += 1
+        if params.get("use_eod"):
+            n_active += 1
+
         results.append({**params,
             "net": net, "max_dd": dd, "ret_dd": ret_dd,
-            "trades": stats["trades"], "baskets": stats["baskets"],
+            "trades": len(result_trades), "baskets": len(filt_baskets),
             "net_pct": 100 * net / benchmark_net if benchmark_net else 0,
             "dd_pct": 100 * dd / benchmark_dd if benchmark_dd else 0,
             "n_active_filters": n_active,
-            "filtered_trades": filt,
+            "filtered_trades": result_trades,
         })
 
     # Deduplicate: group by (trades, baskets, net, max_dd) fingerprint.
@@ -2145,9 +2218,9 @@ def build_filter_results_text(
 
     lines.append(
         f"  {'Rank':>4}  {'Session':>8}  {'Spr.Init':>8}  {'Spr.All':>8}  "
-        f"{'Days':>10}  {'Trades':>7}  {'Bskts':>6}  "
+        f"{'B.SL':>6}  {'EOD':>5}  {'Days':>10}  {'Trades':>7}  {'Bskts':>6}  "
         f"{'Net':>11}  {'Net%':>6}  {'MaxDD':>11}  {'DD%':>6}  {'Ret/DD':>8}")
-    lines.append(f"  {'-' * 108}")
+    lines.append(f"  {'-' * 125}")
 
     for i, r in enumerate(top, start=1):
         rd = f"{r['ret_dd']:.2f}" if r["ret_dd"] != float("inf") else "inf"
@@ -2155,6 +2228,8 @@ def build_filter_results_text(
             f"  {i:>4}  {_fmt_session(r['session_start'], r['session_end']):>8}  "
             f"{_fmt_spread(r['max_spread_initial']):>8}  "
             f"{_fmt_spread(r['max_spread_all']):>8}  "
+            f"{_fmt_sl(r.get('sl_pips')):>6}  "
+            f"{('on' if r.get('use_eod') else 'off'):>5}  "
             f"{r['day_label']:>10}  "
             f"{r['trades']:>7}  {r['baskets']:>6}  "
             f"${r['net']:>9,.2f}  {r['net_pct']:>5.0f}%  "
@@ -2329,6 +2404,14 @@ def main() -> int:
                          "Default: none no-mon no-fri no-mon-fri")
     ap.add_argument("--top-results", type=int, default=20, metavar="N",
                     help="How many top filter results to show (default 20).")
+    ap.add_argument("--filter-sl-values", type=float, nargs="+",
+                    default=[0], metavar="PIPS",
+                    help="Basket SL values to test during filter optimization. "
+                         "0 means no basket SL. Default: 0")
+    ap.add_argument("--filter-eod-options", nargs="+",
+                    default=["off"], metavar="MODE",
+                    help="EOD modes to test during filter optimization. "
+                         "Use off/on or 0/1. Default: off")
     ap.add_argument("--combine", nargs="+", default=None, metavar="FILE",
                     help="Combine N previously-exported curve JSON files into "
                          "a single report. Ignores other flags.")
@@ -2488,12 +2571,15 @@ def main() -> int:
         grid = generate_filter_grid(
             args.session_step, args.min_session_width,
             args.spread_values, args.day_options,
+            args.filter_sl_values, args.filter_eod_options,
         )
         print(f"\nRunning filter optimization ({len(grid):,} trials)…")
 
         top, summary = run_filter_optimization(
             trades, baskets, bars, balance_ops, grid,
             bm_net, bm_dd, args.top_results,
+            args.broker_gmt, pip_size, eod_hour, eod_minute,
+            spread_profile, args.basket_close_window,
         )
 
         result_lines = build_filter_results_text(
@@ -2517,6 +2603,10 @@ def main() -> int:
                 parts.append(f"spr.init {top[0]['max_spread_initial']:.1f}p")
             if top[0]["max_spread_all"] is not None:
                 parts.append(f"spr.all {top[0]['max_spread_all']:.1f}p")
+            if top[0].get("sl_pips") is not None:
+                parts.append(f"SL {top[0]['sl_pips']:.1f}p")
+            if top[0].get("use_eod"):
+                parts.append(f"EOD {args.eod_time}")
             if top[0]["day_label"] != "none":
                 parts.append(top[0]["day_label"])
             top1_label = "#1: " + ", ".join(parts)
