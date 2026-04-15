@@ -1,0 +1,40 @@
+# Python cache and local environments
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Local secrets and broker credentials
+*.env
+*.env.*
+**/broker_login.txt
+**/broker_password.txt
+**/broker_server.txt
+
+# MetaTrader / MT5 generated runtime data
+**/Bases/
+**/logs/
+**/temp/
+**/Tester/
+**/tester/
+**/MQL5/Logs/
+**/WebView2/
+**/EBWebView/
+
+# Portable terminals and local safe copies
+account_review/MT5_BT6/
+running_account_risk_check_and_folder_creation/safe/
+
+# Generated reports and local run artifacts
+**/results/
+**/results_scale_*/
+**/runs/
+**/saved_backtests/
+**/Account_Details/
+**/*.pyc
+
+# Windows noise
+Thumbs.db
+Desktop.ini

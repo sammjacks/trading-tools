@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Real Results Portfolio Review</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 20px; background: #f7f7f7; color: #222; }
+  .container { max-width: 1300px; margin: auto; background: white; padding: 24px;
+                border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+  h1 { font-size: 22px; margin: 0 0 16px; }
+  h2 { font-size: 15px; margin: 24px 0 8px; color: #555; font-weight: 500; }
+  .chart-box { position: relative; height: 420px; margin-bottom: 24px; }
+</style></head><body><div class="container">
+<h1>Real Results Portfolio Review</h1>
+<h2>Portfolio equity (per-strategy + combined)</h2>
+<div class="chart-box"><canvas id="eq_chart"></canvas></div>
+<h2>Portfolio balance (per-strategy + combined)</h2>
+<div class="chart-box"><canvas id="bal_chart"></canvas></div>
+<pre style="font-family: Menlo, Consolas, monospace; font-size: 12px; background: #f8f8f8; padding: 16px; border-radius: 6px; white-space: pre; overflow-x: auto; border: 1px solid #e0e0e0;">
+======================================================================================================================
+PORTFOLIO BACKTEST — Per-strategy + Combined
+======================================================================================================================
+
+  Strategy                                 Scale   Trades  Max Open        Net P&amp;L           Peak         Max DD     Ret/DD
+  --------------------------------------------------------------------------------------------------------------------
+  JapanStrike_USDJPY_M15                   1.00x       70         7 $       89.55 $       89.55 $       35.12       2.55
+  Eurostable_EURUSD_M15 | EURUSD | ma...   1.00x       74        11 $       47.81 $       47.81 $        8.91       5.37
+  Multipair_EURUSD_M15 | EURUSD | mag...   1.00x       26        10 $       41.96 $       41.96 $       27.06       1.55
+  Multipair_GBPUSD_M15 | GBPUSD            1.00x       27         3 $      100.13 $      100.13 $        7.86      12.74
+  Multipair_EURJPY_M15 | EURJPY            1.00x       29         3 $       12.11 $       12.11 $        4.56       2.66
+  --------------------------------------------------------------------------------------------------------------------
+  PORTFOLIO                                                      20 $      291.56 $      291.56 $        0.00        inf
+
+  Sum of individual max DDs (naive):  $83.51
+  Actual portfolio max DD:            $0.00
+  Max open positions at once:         20
+  Diversification benefit:            $83.51 (100.0% lower than sum of parts)
+
+======================================================================================================================
+RISK METRICS
+======================================================================================================================
+
+  Account size:       $10,000.00
+  DD tolerance:       10.0%  (= $1,000.00 allowable DD)
+  Backtest months:    auto-computed per strategy from date range
+
+  Strategy                                 Months      Lot  Open Pos        Net P&amp;L      DD Metric    Safety Factor    Monthly %
+  --------------------------------------------------------------------------------------------------------------------
+  JapanStrike_USDJPY_M15                     0.6      0.04         7 $       89.55         $35.12           28.47x        1.60%
+  Eurostable_EURUSD_M15 | EURUSD | ma...     0.5      0.01        11 $       47.81          $8.91          112.23x        0.91%
+  Multipair_EURUSD_M15 | EURUSD | mag...     0.3      0.02        10 $       41.96         $27.06           36.95x        1.42%
+  Multipair_GBPUSD_M15 | GBPUSD              0.5      0.03         3 $      100.13          $7.86          127.23x        2.18%
+  Multipair_EURJPY_M15 | EURJPY              0.5      0.02         3 $       12.11          $4.56          219.30x        0.25%
+  --------------------------------------------------------------------------------------------------------------------
+  PORTFOLIO                                  0.6                  20 $      291.56          $0.00              inf        4.93%
+
+  Safety Factor =
+      fixed lot: (account × DD tolerance) / Max DD ($)
+      auto risk: DD tolerance (%) / Max DD (%)
+                  interpret as: multiples of current size
+                  you could trade before historical max DD
+                  would equal your tolerance limit.
+                  &gt;1 = within budget, &lt;1 = already exceeds.
+  Monthly %     =
+      fixed lot: linear average monthly return
+                  (Net P&amp;L / Account) / Months
+      auto risk: compounded monthly return
+                  (1 + Net/Account)^(1/Months) - 1</pre>
+<script>
+const labels = ["2026-03-27", "2026-03-29", "2026-03-30", "2026-03-31", "2026-04-01", "2026-04-02", "2026-04-03", "2026-04-06", "2026-04-07", "2026-04-08", "2026-04-09", "2026-04-10", "2026-04-12", "2026-04-13", "2026-04-14"];
+const eqDatasets = [{"label": "PORTFOLIO equity", "data": [0.0, 0.0, 19.3, 56.47, 91.86, 125.86, 127.71, 156.27, 183.78, 219.26, 237.56, 243.4, 283.2, 290.07, 291.56], "borderColor": "#111111", "backgroundColor": "#111111", "borderWidth": 3, "fill": false, "pointRadius": 1.5, "pointHoverRadius": 5, "tension": 0, "spanGaps": true}, {"label": "JapanStrike_USDJPY_M15", "data": [0.0, 0.0, 7.88, 19.11, 47.39, 53.34, 53.34, 63.16, 68.58, 68.58, 82.42, 85.0, 85.0, 89.55, 89.55], "borderColor": "#378ADD", "backgroundColor": "#378ADD", "borderWidth": 1.5, "fill": false, "pointRadius": 1.5, "pointHoverRadius": 5, "tension": 0, "spanGaps": true}, {"label": "Eurostable_EURUSD_M15 | EURUSD | magic 12000", "data": [0.0, 0.0, 3.55, 9.8, 14.62, 16.46, 16.46, 16.46, 16.46, 25.33, 29.79, 33.05, 47.81, 47.81, 47.81], "borderColor": "#E89611", "backgroundColor": "#E89611", "borderWidth": 1.5, "fill": false, "pointRadius": 1.5, "pointHoverRadius": 5, "tension": 0, "spanGaps": true}, {"label": "Multipair_EURUSD_M15 | EURUSD | magic 10000", "data": [null, 0.0, 1.96, 11.66, 11.66, 34.72, 36.2, 38.78, 41.96, 41.96, 41.96, 41.96, 41.96, 41.96, 41.96], "borderColor": "#2E9E5A", "backgroundColor": "#2E9E5A", "borderWidth": 1.5, "fill": false, "pointRadius": 1.5, "pointHoverRadius": 5, "tension": 0, "spanGaps": true}, {"label": "Multipair_GBPUSD_M15 | GBPUSD", "data": [null, null, 4.83, 14.82, 14.82, 17.97, 17.97, 33.29, 49.61, 74.41, 74.41, 74.41, 98.29, 100.13, 100.13], "borderColor": "#B83D8A", "backgroundColor": "#B83D8A", "borderWidth": 1.5, "fill": false, "pointRadius": 1.5, "pointHoverRadius": 5, "tension": 0, "spanGaps": true}, {"label": "Multipair_EURJPY_M15 | EURJPY", "data": [null, null, 1.08, 1.08, 3.37, 3.37, 3.74, 4.58, 7.17, 8.98, 8.98, 8.98, 10.14, 10.62, 12.11], "borderColor": "#7C4DFF", "backgroundColor": "#7C4DFF", "borderWidth": 1.5, "fill": false, "pointRadius": 1.5, "pointHoverRadius": 5, "tension": 0, "spanGaps": true}];
+const balDatasets = [{"label": "PORTFOLIO balance", "data": [0.0, 0.0, 19.3, 56.47, 91.86, 125.86, 127.71, 156.27, 183.78, 219.26, 237.56, 243.4, 283.2, 290.07, 291.56], "borderColor": "#111111", "backgroundColor": "#111111", "borderWidth": 3, "fill": false, "pointRadius": 1.5, "pointHoverRadius": 5, "tension": 0, "spanGaps": true}, {"label": "JapanStrike_USDJPY_M15 balance", "data": [0.0, 0.0, 7.88, 19.11, 47.39, 53.34, 53.34, 63.16, 68.58, 68.58, 82.42, 85.0, 85.0, 89.55, 89.55], "borderColor": "#378ADD", "backgroundColor": "#378ADD", "borderWidth": 1.5, "fill": false, "pointRadius": 1.5, "pointHoverRadius": 5, "tension": 0, "spanGaps": true}, {"label": "Eurostable_EURUSD_M15 | EURUSD | magic 12000 balance", "data": [0.0, 0.0, 3.55, 9.8, 14.62, 16.46, 16.46, 16.46, 16.46, 25.33, 29.79, 33.05, 47.81, 47.81, 47.81], "borderColor": "#E89611", "backgroundColor": "#E89611", "borderWidth": 1.5, "fill": false, "pointRadius": 1.5, "pointHoverRadius": 5, "tension": 0, "spanGaps": true}, {"label": "Multipair_EURUSD_M15 | EURUSD | magic 10000 balance", "data": [null, 0.0, 1.96, 11.66, 11.66, 34.72, 36.2, 38.78, 41.96, 41.96, 41.96, 41.96, 41.96, 41.96, 41.96], "borderColor": "#2E9E5A", "backgroundColor": "#2E9E5A", "borderWidth": 1.5, "fill": false, "pointRadius": 1.5, "pointHoverRadius": 5, "tension": 0, "spanGaps": true}, {"label": "Multipair_GBPUSD_M15 | GBPUSD balance", "data": [null, null, 4.83, 14.82, 14.82, 17.97, 17.97, 33.29, 49.61, 74.41, 74.41, 74.41, 98.29, 100.13, 100.13], "borderColor": "#B83D8A", "backgroundColor": "#B83D8A", "borderWidth": 1.5, "fill": false, "pointRadius": 1.5, "pointHoverRadius": 5, "tension": 0, "spanGaps": true}, {"label": "Multipair_EURJPY_M15 | EURJPY balance", "data": [null, null, 1.08, 1.08, 3.37, 3.37, 3.74, 4.58, 7.17, 8.98, 8.98, 8.98, 10.14, 10.62, 12.11], "borderColor": "#7C4DFF", "backgroundColor": "#7C4DFF", "borderWidth": 1.5, "fill": false, "pointRadius": 1.5, "pointHoverRadius": 5, "tension": 0, "spanGaps": true}];
+
+function mkChart(canvasId, datasets) {
+  new Chart(document.getElementById(canvasId), {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { position: 'top' },
+        tooltip: { callbacks: { label: c => c.dataset.label + ': $' + (c.parsed.y || 0).toLocaleString() } } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 20, maxRotation: 45 } },
+        y: { ticks: { callback: v => '$' + v.toLocaleString() } }
+      }
+    }
+  });
+}
+
+mkChart('eq_chart', eqDatasets);
+mkChart('bal_chart', balDatasets);
+</script></div></body></html>

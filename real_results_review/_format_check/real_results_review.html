@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Real Results Review</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 20px; background: #f7f7f7; color: #222; }
+  .container { max-width: 1300px; margin: auto; background: white; padding: 24px;
+                border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+  h1 { font-size: 22px; margin: 0 0 16px; }
+  h2 { font-size: 16px; margin: 24px 0 12px; color: #333; }
+  .chart-box { position: relative; height: 400px; margin-bottom: 24px; }
+  table { font-size: 13px; border-collapse: collapse; }
+</style></head><body><div class="container">
+<h1>Real Results Review</h1>
+<p style='font-size:12px;color:#666;margin:0 0 12px;'>No matching tick file was available, so the chart falls back to realised trade-event steps.</p>
+<div class="chart-box"><canvas id="eq_chart"></canvas></div>
+<h2>Statistics</h2>
+<table><tr><td style='border:1px solid #ddd;padding:6px 8px;text-align:left;font-weight:600;'>Source</td><td style='border:1px solid #ddd;padding:6px 8px;text-align:right;'>JapanStrike_USDJPY_M15</td></tr><tr><td style='border:1px solid #ddd;padding:6px 8px;text-align:left;font-weight:600;'>Format</td><td style='border:1px solid #ddd;padding:6px 8px;text-align:right;'>mt4_live</td></tr><tr><td style='border:1px solid #ddd;padding:6px 8px;text-align:left;font-weight:600;'>Symbol</td><td style='border:1px solid #ddd;padding:6px 8px;text-align:right;'>USDJPY</td></tr><tr><td style='border:1px solid #ddd;padding:6px 8px;text-align:left;font-weight:600;'>Trade Count</td><td style='border:1px solid #ddd;padding:6px 8px;text-align:right;'>70</td></tr><tr><td style='border:1px solid #ddd;padding:6px 8px;text-align:left;font-weight:600;'>Wins / Losses</td><td style='border:1px solid #ddd;padding:6px 8px;text-align:right;'>54 / 16</td></tr><tr><td style='border:1px solid #ddd;padding:6px 8px;text-align:left;font-weight:600;'>Win Rate</td><td style='border:1px solid #ddd;padding:6px 8px;text-align:right;'>77.1%</td></tr><tr><td style='border:1px solid #ddd;padding:6px 8px;text-align:left;font-weight:600;'>Profit Factor</td><td style='border:1px solid #ddd;padding:6px 8px;text-align:right;'>2.35</td></tr><tr><td style='border:1px solid #ddd;padding:6px 8px;text-align:left;font-weight:600;'>Net Profit</td><td style='border:1px solid #ddd;padding:6px 8px;text-align:right;'>$89.55</td></tr><tr><td style='border:1px solid #ddd;padding:6px 8px;text-align:left;font-weight:600;'>Max Drawdown</td><td style='border:1px solid #ddd;padding:6px 8px;text-align:right;'>$0.00</td></tr><tr><td style='border:1px solid #ddd;padding:6px 8px;text-align:left;font-weight:600;'>Return/DD</td><td style='border:1px solid #ddd;padding:6px 8px;text-align:right;'>0.00</td></tr><tr><td style='border:1px solid #ddd;padding:6px 8px;text-align:left;font-weight:600;'>Base Basket Lot</td><td style='border:1px solid #ddd;padding:6px 8px;text-align:right;'>0.0400</td></tr><tr><td style='border:1px solid #ddd;padding:6px 8px;text-align:left;font-weight:600;'>Applied Scale</td><td style='border:1px solid #ddd;padding:6px 8px;text-align:right;'>1.00x</td></tr><tr><td style='border:1px solid #ddd;padding:6px 8px;text-align:left;font-weight:600;'>Review Window</td><td style='border:1px solid #ddd;padding:6px 8px;text-align:right;'>2026-03-29 00:00 → 2026-04-13 20:46</td></tr></table>
+<h2>Trade Entry Hour Distribution (UTC)</h2>
+<div class="chart-box" style="height:260px;"><canvas id="hour_chart"></canvas></div>
+<h2>Portfolio Outputs</h2><p style='font-size:12px;color:#666;margin:0 0 12px;'>Portfolio HTML and XLSX summary were created under the portfolio subfolder.</p>
+<script>
+const eqLabels = ["2026-03-27 18:30", "2026-03-30 03:15", "2026-03-30 03:15", "2026-03-30 03:15", "2026-03-30 05:46", "2026-03-30 08:09", "2026-03-30 09:30", "2026-03-30 10:15", "2026-03-30 11:56", "2026-03-30 16:16", "2026-03-30 18:45", "2026-03-30 21:22", "2026-03-31 04:46", "2026-03-31 04:46", "2026-03-31 09:15", "2026-03-31 14:30", "2026-03-31 15:16", "2026-03-31 17:46", "2026-03-31 19:33", "2026-03-31 21:24", "2026-04-01 03:54", "2026-04-01 09:15", "2026-04-01 12:00", "2026-04-01 13:04", "2026-04-01 15:30", "2026-04-01 16:04", "2026-04-01 17:32", "2026-04-01 18:21", "2026-04-01 19:31", "2026-04-01 21:00", "2026-04-02 00:50", "2026-04-02 04:17", "2026-04-02 17:30", "2026-04-02 17:30", "2026-04-06 05:43", "2026-04-06 05:43", "2026-04-06 05:43", "2026-04-06 07:03", "2026-04-06 09:50", "2026-04-06 14:31", "2026-04-06 14:31", "2026-04-06 19:19", "2026-04-06 20:23", "2026-04-06 21:32", "2026-04-06 23:00", "2026-04-07 04:02", "2026-04-07 06:53", "2026-04-07 10:49", "2026-04-07 20:45", "2026-04-07 20:45", "2026-04-07 22:31", "2026-04-09 11:03", "2026-04-09 11:03", "2026-04-09 11:03", "2026-04-09 11:03", "2026-04-09 11:03", "2026-04-09 11:03", "2026-04-09 11:03", "2026-04-09 16:31", "2026-04-09 17:15", "2026-04-09 18:30", "2026-04-09 20:46", "2026-04-10 02:07", "2026-04-10 05:58", "2026-04-10 15:02", "2026-04-10 16:02", "2026-04-10 17:03", "2026-04-10 17:59", "2026-04-13 20:46", "2026-04-13 20:46", "2026-04-13 20:46"];
+new Chart(document.getElementById('eq_chart'), {
+  type: 'line',
+  data: {
+    labels: eqLabels,
+    datasets: [
+      {
+        label: 'Balance',
+        data: [0.0, -8.01, -7.4, -1.34, 0.77, 0.68, 2.16, 3.62, 5.15, 5.06, 6.52, 7.88, 5.71, 9.15, 10.56, 12.02, 14.01, 16.43, 17.67, 19.11, 24.93, 28.11, 31.27, 31.12, 32.64, 38.88, 42.47, 43.33, 44.02, 47.43, 47.39, 53.31, 49.65, 53.34, 46.84, 45.91, 51.48, 52.51, 53.12, 52.35, 56.69, 57.1, 59.86, 63.15, 63.16, 64.14, 64.82, 65.48, 63.01, 66.07, 68.58, 50.04, 37.94, 33.46, 35.1, 42.53, 55.92, 77.87, 78.33, 80.17, 81.88, 82.42, 83.03, 83.34, 83.6, 83.53, 84.64, 85.0, 78.75, 81.19, 89.55],
+        borderColor: '#305496',
+        backgroundColor: 'rgba(48,84,150,0.04)',
+        borderWidth: 2,
+        fill: false,
+        pointRadius: 0,
+        tension: 0.15
+      },
+      {
+        label: 'Equity',
+        data: [0.0, -8.01, -7.4, -1.34, 0.77, 0.68, 2.16, 3.62, 5.15, 5.06, 6.52, 7.88, 5.71, 9.15, 10.56, 12.02, 14.01, 16.43, 17.67, 19.11, 24.93, 28.11, 31.27, 31.12, 32.64, 38.88, 42.47, 43.33, 44.02, 47.43, 47.39, 53.31, 49.65, 53.34, 46.84, 45.91, 51.48, 52.51, 53.12, 52.35, 56.69, 57.1, 59.86, 63.15, 63.16, 64.14, 64.82, 65.48, 63.01, 66.07, 68.58, 50.04, 37.94, 33.46, 35.1, 42.53, 55.92, 77.87, 78.33, 80.17, 81.88, 82.42, 83.03, 83.34, 83.6, 83.53, 84.64, 85.0, 78.75, 81.19, 89.55],
+        borderColor: '#F44336',
+        backgroundColor: 'rgba(244,67,54,0.06)',
+        borderWidth: 2,
+        fill: false,
+        pointRadius: 0,
+        tension: 0.15
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: { legend: { position: 'top' } },
+    scales: {
+      x: { ticks: { maxTicksLimit: 24, maxRotation: 45 } },
+      y: { ticks: { callback: v => '$' + v.toLocaleString('en-US', { minimumFractionDigits: 0 }) } }
+    }
+  }
+});
+new Chart(document.getElementById('hour_chart'), {
+  type: 'bar',
+  data: {
+    labels: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+    datasets: [{
+      label: 'JapanStrike_USDJPY_M15 (%)',
+      data: [2.9, 4.3, 4.3, 4.3, 4.3, 2.9, 1.4, 2.9, 5.7, 4.3, 2.9, 1.4, 2.9, 2.9, 7.1, 4.3, 10.0, 5.7, 5.7, 4.3, 5.7, 1.4, 4.3, 4.3],
+      backgroundColor: 'rgba(55,138,221,0.7)',
+      borderColor: '#378ADD',
+      borderWidth: 1
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { position: 'top' } },
+    scales: {
+      x: { title: { display: true, text: 'Hour of Day (UTC)' } },
+      y: { beginAtZero: true, title: { display: true, text: '% of Trades' }, ticks: { callback: v => v + '%' } }
+    }
+  }
+});
+</script></div></body></html>

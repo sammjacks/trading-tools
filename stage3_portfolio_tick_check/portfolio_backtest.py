@@ -345,6 +345,65 @@ def parse_backtest(path: str, broker_gmt: int,
     return trades, fmt
 
 
+def _parse_summary_number(value: str) -> float:
+    text = (value or "").replace("\xa0", " ").strip()
+    m = re.search(r"-?[0-9][0-9\s,]*\.?[0-9]*", text)
+    return _parse_num(m.group(0)) if m else 0.0
+
+
+def _parse_amount_pct_pair(value: str) -> Tuple[float, float]:
+    text = (value or "").replace("\xa0", " ").strip()
+    m = re.search(r"([-0-9\s,]*\.?[0-9]+)\s*\(([-0-9\s,]*\.?[0-9]+)%\)", text)
+    if m:
+        return abs(_parse_num(m.group(1))), abs(_parse_num(m.group(2)))
+    m = re.search(r"([-0-9\s,]*\.?[0-9]+)%\s*\(([-0-9\s,]*\.?[0-9]+)\)", text)
+    if m:
+        return abs(_parse_num(m.group(2))), abs(_parse_num(m.group(1)))
+    return 0.0, 0.0
+
+
+def extract_backtest_report_summary(path: str) -> Dict:
+    """Extract key MT5 report summary metrics directly from the HTML report."""
+    try:
+        html_text = read_text_file(path)
+    except OSError:
+        return {}
+
+    rows = _extract_rows(html_text)
+    summary: Dict[str, float] = {}
+
+    for row in rows:
+        for i in range(0, len(row) - 1, 2):
+            label = row[i].strip().rstrip(":").lower()
+            value = row[i + 1].strip()
+            if not label or not value:
+                continue
+            if label == "initial deposit":
+                summary["initial_deposit"] = _parse_summary_number(value)
+            elif label == "total net profit":
+                summary["report_net"] = _parse_summary_number(value)
+            elif label == "equity drawdown maximal":
+                amt, pct = _parse_amount_pct_pair(value)
+                if amt > 0:
+                    summary["report_max_dd"] = amt
+                if pct > 0:
+                    summary["report_max_dd_pct"] = pct
+            elif label == "equity drawdown relative":
+                amt, pct = _parse_amount_pct_pair(value)
+                if "report_max_dd" not in summary and amt > 0:
+                    summary["report_max_dd"] = amt
+                if "report_max_dd_pct" not in summary and pct > 0:
+                    summary["report_max_dd_pct"] = pct
+            elif label == "balance drawdown maximal":
+                amt, pct = _parse_amount_pct_pair(value)
+                if "report_balance_dd" not in summary and amt > 0:
+                    summary["report_balance_dd"] = amt
+                if "report_balance_dd_pct" not in summary and pct > 0:
+                    summary["report_balance_dd_pct"] = pct
+
+    return summary
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Bar CSV loading
 # ────────────────────────────────────────────────────────────────────────────
@@ -613,6 +672,29 @@ def max_drawdown(values: List[float]) -> Tuple[float, float, float]:
     return peak, low, max_dd
 
 
+def max_drawdown_pct(values: List[float], baseline: float = 0.0) -> float:
+    """Return max peak-to-trough drawdown percentage over the curve.
+
+    `values` are typically P&L values relative to the start of the test.
+    For auto-risk calculations we must measure drawdown against account
+    equity, not against a zero-based P&L curve, so callers can provide the
+    starting account balance via `baseline`.
+    """
+    if not values:
+        return 0.0
+    running_peak = max(values[0] + baseline, 0.0)
+    max_dd_pct = 0.0
+    for v in values:
+        equity_value = v + baseline
+        if equity_value > running_peak:
+            running_peak = equity_value
+        if running_peak > 0:
+            dd_pct = (running_peak - equity_value) / running_peak * 100.0
+            if dd_pct > max_dd_pct:
+                max_dd_pct = dd_pct
+    return max_dd_pct
+
+
 def months_between(date_strs: List[str]) -> float:
     """Return elapsed months between the first and last date string
     ('YYYY-MM-DD'). Uses 30.44 days/month average. Returns 0.0 for
@@ -693,9 +775,16 @@ def format_elapsed(seconds: float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
-def compute_risk_metrics(net: float, max_dd: float, months: float,
-                          account_size: float, dd_tolerance_pct: float
-                          ) -> Dict:
+def compute_risk_metrics(
+    net: float,
+    max_dd: float,
+    months: float,
+    account_size: float,
+    dd_tolerance_pct: float,
+    risk_mode: str = "FIXED_LOT",
+    max_dd_pct: float = 0.0,
+    report_initial_deposit: float = 0.0,
+) -> Dict:
     """Compute safety factor and monthly % estimate.
 
     Safety factor = (account × dd_tolerance) / max_dd
@@ -707,17 +796,35 @@ def compute_risk_metrics(net: float, max_dd: float, months: float,
         Average monthly return as a fraction of the account over the
         backtest period.
     """
+    use_auto = (risk_mode or "").strip().upper() == "AUTO_RISK"
     allowable_dd = account_size * (dd_tolerance_pct / 100.0)
-    if max_dd > 0:
-        safety_factor = allowable_dd / max_dd
+    if use_auto:
+        if max_dd_pct > 0:
+            safety_factor = dd_tolerance_pct / max_dd_pct
+        else:
+            safety_factor = float("inf")
+        allowable_metric = dd_tolerance_pct
     else:
-        safety_factor = float("inf")
+        if max_dd > 0:
+            safety_factor = allowable_dd / max_dd
+        else:
+            safety_factor = float("inf")
+        allowable_metric = allowable_dd
+
     if months > 0 and account_size > 0:
-        monthly_pct = (net / account_size) / months * 100.0
+        if use_auto:
+            growth_base = report_initial_deposit if report_initial_deposit > 0 else account_size
+            growth = 1.0 + (net / growth_base) if growth_base > 0 else 1.0
+            if growth > 0:
+                monthly_pct = (growth ** (1.0 / months) - 1.0) * 100.0
+            else:
+                monthly_pct = -100.0
+        else:
+            monthly_pct = (net / account_size) / months * 100.0
     else:
         monthly_pct = 0.0
     return {
-        "allowable_dd": allowable_dd,
+        "allowable_dd": allowable_metric,
         "safety_factor": safety_factor,
         "monthly_pct": monthly_pct,
     }
@@ -752,10 +859,13 @@ def parse_strategy_arg(s: str) -> Dict:
         #   empty (trailing '|') → explicitly disable filtering
         "symbol_filter": (parts[5] if (len(parts) >= 6 and parts[5])
                            else (symbol if len(parts) < 6 else "")),
+        "risk_mode": (parts[6].strip().upper()
+                  if len(parts) >= 7 and parts[6].strip()
+                  else "FIXED_LOT"),
     }
 
 
-def _load_strategy_trades(cfg: Dict, months_override: Optional[float] = None) -> Tuple[List[Dict], float, str, float]:
+def _load_strategy_trades(cfg: Dict, months_override: Optional[float] = None) -> Tuple[List[Dict], float, str, float, Dict]:
     print(f"\nLoading {cfg['symbol']} (scale={cfg['scale']:.2f}x)…")
     print(f"  Backtest: {cfg['bt_path']}")
 
@@ -776,6 +886,7 @@ def _load_strategy_trades(cfg: Dict, months_override: Optional[float] = None) ->
         else:
             raise FileNotFoundError(f"Backtest file not found: {cfg['bt_path']}")
 
+    report_summary = extract_backtest_report_summary(cfg["bt_path"])
     trades, fmt = parse_backtest(cfg["bt_path"], cfg["broker_gmt"],
                                   cfg["symbol_filter"])
     print(f"  Detected format: {fmt}")
@@ -820,14 +931,25 @@ def _load_strategy_trades(cfg: Dict, months_override: Optional[float] = None) ->
             t["swap"] *= scale
             t["lots"] *= scale
 
-    return trades, base_lot, fmt, scale
+    return trades, base_lot, fmt, scale, report_summary
 
 
 def _build_strategy_result(cfg: Dict, trades: List[Dict], base_lot: float,
-                           scale: float, curves: List[Dict], source_label: str) -> Dict:
+                           scale: float, curves: List[Dict], source_label: str,
+                           account_size: float, report_summary: Optional[Dict] = None) -> Dict:
+    report_summary = report_summary or {}
     labels, bal, eq = curves_to_daily(curves)
+    curve_eq = [c["eq"] for c in curves]
 
-    peak, low, max_dd = max_drawdown(eq)
+    peak, low, curve_max_dd = max_drawdown(curve_eq)
+    report_initial_deposit = float(report_summary.get("initial_deposit", 0.0) or 0.0)
+    max_dd = float(report_summary.get("report_max_dd", 0.0) or 0.0) or curve_max_dd
+    if float(report_summary.get("report_max_dd_pct", 0.0) or 0.0) > 0:
+        max_dd_pct = float(report_summary.get("report_max_dd_pct", 0.0) or 0.0)
+    else:
+        dd_baseline = report_initial_deposit if report_initial_deposit > 0 else account_size
+        max_dd_pct = max_drawdown_pct(curve_eq, baseline=dd_baseline)
+
     net = round(sum(t["profit"] + t["commission"] + t["swap"] for t in trades), 2)
     months = months_between(labels)
     max_open = max_open_positions(trades)
@@ -846,8 +968,11 @@ def _build_strategy_result(cfg: Dict, trades: List[Dict], base_lot: float,
         "peak": peak,
         "low": low,
         "max_dd": max_dd,
+        "max_dd_pct": max_dd_pct,
         "max_open_positions": max_open,
         "months": months,
+        "risk_mode": cfg.get("risk_mode", "FIXED_LOT"),
+        "report_initial_deposit": report_initial_deposit,
         "labels": labels,
         "balance": bal,
         "equity": eq,
@@ -856,8 +981,9 @@ def _build_strategy_result(cfg: Dict, trades: List[Dict], base_lot: float,
 
 
 def load_strategy(cfg: Dict, months_override: Optional[float] = None,
-                  curve_source: str = "bars", tick_gmt: int = 2) -> Dict:
-    trades, base_lot, _fmt, scale = _load_strategy_trades(cfg, months_override)
+                  curve_source: str = "bars", tick_gmt: int = 2,
+                  account_size: float = 0.0) -> Dict:
+    trades, base_lot, _fmt, scale, report_summary = _load_strategy_trades(cfg, months_override)
 
     if curve_source == "bars":
         print(f"  Bars:     {cfg['bars_path']}")
@@ -866,8 +992,14 @@ def load_strategy(cfg: Dict, months_override: Optional[float] = None,
         bars = load_bars(cfg["bars_path"])
         if not bars:
             raise ValueError(f"{cfg['symbol']}: no bars loaded from {cfg['bars_path']}")
+        if trades:
+            min_ts = min(t["ts"] for t in trades) - 86400
+            max_ts = max(t["close_ts"] for t in trades) + 86400
+            filtered_bars = [b for b in bars if min_ts <= b["ts"] <= max_ts]
+            if filtered_bars:
+                bars = filtered_bars
         curves = build_equity_curve(trades, bars)
-        return _build_strategy_result(cfg, trades, base_lot, scale, curves, "bars")
+        return _build_strategy_result(cfg, trades, base_lot, scale, curves, "bars", account_size, report_summary)
 
     if curve_source == "ticks":
         tick_path = cfg.get("tick_path", "")
@@ -880,12 +1012,32 @@ def load_strategy(cfg: Dict, months_override: Optional[float] = None,
         if not ticks:
             raise ValueError(f"{cfg['symbol']}: no ticks loaded from {tick_path}")
         curves = build_equity_curve_from_ticks(trades, ticks)
-        return _build_strategy_result(cfg, trades, base_lot, scale, curves, "ticks")
+        return _build_strategy_result(cfg, trades, base_lot, scale, curves, "ticks", account_size, report_summary)
 
     raise ValueError(f"Unknown curve_source: {curve_source}")
 
 
-def combine_curves(strategies: List[Dict]) -> Dict:
+def combine_curves(strategies: List[Dict], account_size: float = 0.0) -> Dict:
+    risk_modes = sorted({(s.get("risk_mode") or "FIXED_LOT").upper() for s in strategies})
+    combined_risk_mode = risk_modes[0] if len(risk_modes) == 1 else "MIXED"
+
+    if len(strategies) == 1:
+        single = strategies[0]
+        return {
+            "labels": single["labels"],
+            "balance": single["balance"],
+            "equity": single["equity"],
+            "net": single["net"],
+            "peak": single["peak"],
+            "low": single["low"],
+            "max_dd": single["max_dd"],
+            "max_dd_pct": single["max_dd_pct"],
+            "max_open_positions": single["max_open_positions"],
+            "months": single["months"],
+            "risk_mode": combined_risk_mode,
+            "risk_modes": risk_modes,
+        }
+
     all_dates = sorted({d for s in strategies for d in s["labels"]})
     n = len(all_dates)
     combined_bal = [0.0] * n
@@ -907,6 +1059,7 @@ def combine_curves(strategies: List[Dict]) -> Dict:
                 combined_eq[i] += last_eq
 
     peak, low, max_dd = max_drawdown(combined_eq)
+    dd_pct = max_drawdown_pct(combined_eq, baseline=account_size)
     return {
         "labels": all_dates,
         "balance": [round(x, 2) for x in combined_bal],
@@ -915,8 +1068,11 @@ def combine_curves(strategies: List[Dict]) -> Dict:
         "peak": peak,
         "low": low,
         "max_dd": max_dd,
+        "max_dd_pct": dd_pct,
         "max_open_positions": max_open_positions_for_strategies(strategies),
         "months": months_between(all_dates),
+        "risk_mode": combined_risk_mode,
+        "risk_modes": risk_modes,
     }
 
 
@@ -1084,6 +1240,8 @@ def find_optimal_combinations(
             rm = compute_risk_metrics(
                 combined["net"], combined["max_dd"], months,
                 account_size, dd_tolerance_pct,
+                risk_mode=combined.get("risk_mode", "FIXED_LOT"),
+                max_dd_pct=combined.get("max_dd_pct", 0.0),
             )
             if (rm["safety_factor"] >= min_sf
                     and rm["monthly_pct"] >= min_monthly_pct):
@@ -1255,33 +1413,46 @@ def build_diverse_top_text(top: List[Dict]) -> List[str]:
     return lines
 
 
+def _fit_stats_label(text: str, width: int) -> str:
+    s = str(text)
+    if len(s) <= width:
+        return s
+    if width <= 3:
+        return s[:width]
+    return s[:width - 3] + "..."
+
+
 def build_stats_text(strategies: List[Dict], combined: Dict,
                       account_size: float, dd_tolerance_pct: float,
                       backtest_months_override: Optional[float]) -> List[str]:
+    name_w = 38
+    rule_w = 118
+
     lines = [""]
-    lines.append("=" * 92)
+    lines.append("=" * rule_w)
     lines.append("PORTFOLIO BACKTEST — Per-strategy + Combined")
-    lines.append("=" * 92)
+    lines.append("=" * rule_w)
     lines.append("")
-    lines.append(f"  {'Strategy':<14} {'Scale':>7} {'Trades':>8} {'Max Open':>9} "
+    lines.append(f"  {'Strategy':<{name_w}} {'Scale':>7} {'Trades':>8} {'Max Open':>9} "
                  f"{'Net P&L':>14} {'Peak':>14} {'Max DD':>14} {'Ret/DD':>10}")
-    lines.append(f"  {'-' * 90}")
+    lines.append(f"  {'-' * (rule_w - 2)}")
 
     for s in strategies:
         ret_dd = s["net"] / s["max_dd"] if s["max_dd"] > 0 else float("inf")
         ret_dd_str = f"{ret_dd:.2f}" if ret_dd != float("inf") else "inf"
+        sym = _fit_stats_label(s["symbol"], name_w)
         lines.append(
-            f"  {s['symbol']:<14} {s['scale']:>6.2f}x {s['trades']:>8} {s['max_open_positions']:>9} "
+            f"  {sym:<{name_w}} {s['scale']:>6.2f}x {s['trades']:>8} {s['max_open_positions']:>9} "
             f"${s['net']:>12,.2f} ${s['peak']:>12,.2f} "
             f"${s['max_dd']:>12,.2f} {ret_dd_str:>10}"
         )
 
-    lines.append(f"  {'-' * 90}")
+    lines.append(f"  {'-' * (rule_w - 2)}")
     sum_dd_naive = sum(s["max_dd"] for s in strategies)
     combined_ret_dd = combined["net"] / combined["max_dd"] if combined["max_dd"] > 0 else float("inf")
     combined_ret_dd_str = f"{combined_ret_dd:.2f}" if combined_ret_dd != float("inf") else "inf"
     lines.append(
-        f"  {'PORTFOLIO':<14} {'':>7} {'':>8} {combined['max_open_positions']:>9} "
+        f"  {'PORTFOLIO':<{name_w}} {'':>7} {'':>8} {combined['max_open_positions']:>9} "
         f"${combined['net']:>12,.2f} ${combined['peak']:>12,.2f} "
         f"${combined['max_dd']:>12,.2f} {combined_ret_dd_str:>10}"
     )
@@ -1300,12 +1471,11 @@ def build_stats_text(strategies: List[Dict], combined: Dict,
             lines.append(f"  Diversification benefit:            "
                          f"none — drawdowns aligned in time")
 
-    # ── Risk metrics section ───────────────────────────────────────────
     allowable_dd = account_size * (dd_tolerance_pct / 100.0)
     lines.append("")
-    lines.append("=" * 92)
+    lines.append("=" * rule_w)
     lines.append("RISK METRICS")
-    lines.append("=" * 92)
+    lines.append("=" * rule_w)
     lines.append("")
     lines.append(f"  Account size:       ${account_size:,.2f}")
     lines.append(f"  DD tolerance:       {dd_tolerance_pct:.1f}%  "
@@ -1316,48 +1486,72 @@ def build_stats_text(strategies: List[Dict], combined: Dict,
     else:
         lines.append(f"  Backtest months:    auto-computed per strategy "
                      f"from date range")
+    if combined.get("risk_mode", "FIXED_LOT").upper() == "MIXED":
+        mode_list = ", ".join(combined.get("risk_modes", [])) or "AUTO_RISK, FIXED_LOT"
+        lines.append(
+            f"  WARNING: mixed risk modes detected ({mode_list}). Portfolio-level metrics default to fixed-lot $ drawdown formulas."
+        )
     lines.append("")
-    lines.append(f"  {'Strategy':<14} {'Months':>8} {'Lot':>8} {'Open Pos':>9} "
-                 f"{'Net P&L':>14} {'Max DD':>14} "
+    lines.append(f"  {'Strategy':<{name_w}} {'Months':>8} {'Lot':>8} {'Open Pos':>9} "
+                 f"{'Net P&L':>14} {'DD Metric':>14} "
                  f"{'Safety Factor':>16} {'Monthly %':>12}")
-    lines.append(f"  {'-' * 90}")
+    lines.append(f"  {'-' * (rule_w - 2)}")
 
     for s in strategies:
         months = backtest_months_override if backtest_months_override is not None else s["months"]
+        risk_mode = s.get("risk_mode", "FIXED_LOT").upper()
         rm = compute_risk_metrics(
-            s["net"], s["max_dd"], months, account_size, dd_tolerance_pct
+            s["net"], s["max_dd"], months, account_size, dd_tolerance_pct,
+            risk_mode=risk_mode,
+            max_dd_pct=s.get("max_dd_pct", 0.0),
         )
         sf_str = (f"{rm['safety_factor']:.2f}x"
                   if rm["safety_factor"] != float("inf") else "inf")
         lot_str = f"{s['lot_size']:.2f}"
+        dd_metric = (f"{s.get('max_dd_pct', 0.0):.2f}%"
+                     if risk_mode == "AUTO_RISK"
+                     else f"${s['max_dd']:,.2f}")
+        sym = _fit_stats_label(s["symbol"], name_w)
         lines.append(
-            f"  {s['symbol']:<14} {months:>7.1f}  {lot_str:>8} {s['max_open_positions']:>9} "
-            f"${s['net']:>12,.2f} ${s['max_dd']:>12,.2f} "
+            f"  {sym:<{name_w}} {months:>7.1f}  {lot_str:>8} {s['max_open_positions']:>9} "
+            f"${s['net']:>12,.2f} {dd_metric:>14} "
             f"{sf_str:>16} {rm['monthly_pct']:>11.2f}%"
         )
 
-    lines.append(f"  {'-' * 90}")
+    lines.append(f"  {'-' * (rule_w - 2)}")
     p_months = (backtest_months_override
                 if backtest_months_override is not None else combined["months"])
+    p_metric_mode = "FIXED_LOT" if combined.get("risk_mode", "FIXED_LOT").upper() == "MIXED" else combined.get("risk_mode", "FIXED_LOT")
     p_rm = compute_risk_metrics(
         combined["net"], combined["max_dd"], p_months,
-        account_size, dd_tolerance_pct
+        account_size, dd_tolerance_pct,
+        risk_mode=p_metric_mode,
+        max_dd_pct=combined.get("max_dd_pct", 0.0),
     )
+    p_risk_mode = combined.get("risk_mode", "FIXED_LOT").upper()
+    p_dd_metric = (f"{combined.get('max_dd_pct', 0.0):.2f}%"
+                   if p_risk_mode == "AUTO_RISK"
+                   else f"${combined['max_dd']:,.2f}")
     p_sf_str = (f"{p_rm['safety_factor']:.2f}x"
                 if p_rm["safety_factor"] != float("inf") else "inf")
     lines.append(
-        f"  {'PORTFOLIO':<14} {p_months:>7.1f}  {'':>8} {combined['max_open_positions']:>9} "
-        f"${combined['net']:>12,.2f} ${combined['max_dd']:>12,.2f} "
+        f"  {'PORTFOLIO':<{name_w}} {p_months:>7.1f}  {'':>8} {combined['max_open_positions']:>9} "
+        f"${combined['net']:>12,.2f} {p_dd_metric:>14} "
         f"{p_sf_str:>16} {p_rm['monthly_pct']:>11.2f}%"
     )
     lines.append("")
-    lines.append("  Safety Factor = (account × DD tolerance) / Max DD")
+    lines.append("  Safety Factor =")
+    lines.append("      fixed lot: (account × DD tolerance) / Max DD ($)")
+    lines.append("      auto risk: DD tolerance (%) / Max DD (%)")
     lines.append("                  interpret as: multiples of current size")
     lines.append("                  you could trade before historical max DD")
     lines.append("                  would equal your tolerance limit.")
     lines.append("                  >1 = within budget, <1 = already exceeds.")
-    lines.append("  Monthly %     = average monthly return as % of account.")
-    lines.append("                  (Net P&L / Account) / Backtest Months")
+    lines.append("  Monthly %     =")
+    lines.append("      fixed lot: linear average monthly return")
+    lines.append("                  (Net P&L / Account) / Months")
+    lines.append("      auto risk: compounded monthly return")
+    lines.append("                  (1 + Net/Account)^(1/Months) - 1")
     return lines
 
 
@@ -1530,11 +1724,19 @@ def write_portfolio_xlsx(strategies, combined, out_path, title,
                 "formulas will recalculate."
     ws["D3"].font = Font(name="Arial", size=9, italic=True, color="808080")
     ws.merge_cells("D3:J3")
+    if (combined.get("risk_mode") or "FIXED_LOT").upper() == "MIXED":
+        mode_list = ", ".join(combined.get("risk_modes", [])) or "AUTO_RISK, FIXED_LOT"
+        ws["D4"] = (
+            f"WARNING: mixed risk modes detected ({mode_list}). "
+            "Portfolio formulas default to fixed-lot $DD interpretation."
+        )
+        ws["D4"].font = Font(name="Arial", size=9, italic=True, color="C00000")
+        ws.merge_cells("D4:J4")
 
     # ── Table headers (row 7) ────────────────────────────────────────
     headers = [
         "Strategy", "Trades", "Max Open", "Lot Size", "Months",
-        "Net P&L", "Max DD", "Allowable DD", "Safety Factor", "Monthly %",
+        "Net P&L", "Max DD", "Allowable DD", "Safety Factor", "Monthly %", "Risk Mode",
     ]
     HEADER_ROW = 7
     for col_idx, h in enumerate(headers, start=1):
@@ -1560,51 +1762,95 @@ def write_portfolio_xlsx(strategies, combined, out_path, title,
         ws.cell(row=data_row, column=1, value=s["symbol"]).font = black_font
         ws.cell(row=data_row, column=2, value=s["trades"]).number_format = "#,##0"
         ws.cell(row=data_row, column=3, value=s["max_open_positions"]).number_format = "0"
-        ws.cell(row=data_row, column=4, value=s["lot_size"]).number_format = "0.00"
+
+        risk_mode = (s.get("risk_mode") or "FIXED_LOT").upper()
+        report_initial_deposit = float(s.get("report_initial_deposit", 0.0) or 0.0)
+        lot_value = round(s["lot_size"], 4)
+        if risk_mode == "AUTO_RISK" and report_initial_deposit > 0:
+            lot_formula = (
+                f'=IF($K{data_row}="AUTO_RISK",'
+                f'{ACCOUNT_REF}*({lot_value}/{report_initial_deposit:.8f}),'
+                f'{lot_value})'
+            )
+            lot_cell = ws.cell(row=data_row, column=4, value=lot_formula)
+        else:
+            lot_cell = ws.cell(row=data_row, column=4, value=lot_value)
+        lot_cell.number_format = "0.0000"
 
         # Months: blue (editable hardcode) since this is a per-row number
-        # the user might want to override manually.
-        months_cell = ws.cell(row=data_row, column=5, value=round(months, 1))
+        # the user might want to override manually. Keep the full numeric
+        # precision in the cell so the Monthly % formula matches the HTML,
+        # while displaying only one decimal place to the user.
+        months_cell = ws.cell(row=data_row, column=5, value=float(months))
         months_cell.font = blue_font
         months_cell.fill = input_fill
         months_cell.number_format = "0.0"
 
-        net_cell = ws.cell(row=data_row, column=6, value=round(s["net"], 2))
+        net_value = round(s["net"], 2)
+        if risk_mode == "AUTO_RISK" and report_initial_deposit > 0:
+            net_formula = (
+                f'=IF($K{data_row}="AUTO_RISK",'
+                f'{ACCOUNT_REF}*({net_value}/{report_initial_deposit:.8f}),'
+                f'{net_value})'
+            )
+            net_cell = ws.cell(row=data_row, column=6, value=net_formula)
+        else:
+            net_cell = ws.cell(row=data_row, column=6, value=net_value)
         net_cell.font = blue_font
         net_cell.fill = input_fill
         net_cell.number_format = '"$"#,##0.00;("$"#,##0.00);-'
 
-        dd_cell = ws.cell(row=data_row, column=7, value=round(s["max_dd"], 2))
+        if risk_mode == "AUTO_RISK":
+            dd_value = (s.get("max_dd_pct", 0.0) / 100.0)
+            dd_number_format = "0.00%"
+        else:
+            dd_value = round(s["max_dd"], 2)
+            dd_number_format = '"$"#,##0.00;("$"#,##0.00);-'
+
+        dd_cell = ws.cell(row=data_row, column=7, value=dd_value)
         dd_cell.font = blue_font
         dd_cell.fill = input_fill
-        dd_cell.number_format = '"$"#,##0.00;("$"#,##0.00);-'
+        dd_cell.number_format = dd_number_format
 
-        # Allowable DD = account × DD tolerance
-        ws.cell(row=data_row, column=8,
-                value=f"={ACCOUNT_REF}*{DDTOL_REF}"
-                ).number_format = '"$"#,##0.00'
+        mode_cell = ws.cell(row=data_row, column=11, value=risk_mode)
+        mode_cell.font = black_font
 
-        # Safety Factor = allowable / max DD  (handles DD=0)
+        # Allowable DD = account × DD tolerance (fixed lot), or DD tolerance % (auto risk)
+        ws.cell(
+            row=data_row,
+            column=8,
+            value=f'=IF($K{data_row}="AUTO_RISK",{DDTOL_REF},{ACCOUNT_REF}*{DDTOL_REF})',
+        ).number_format = '"$"#,##0.00'
+
+        # Safety Factor = allowable / observed DD metric (handles DD=0)
         dd_ref = ws.cell(row=data_row, column=7).coordinate
+        allow_ref = ws.cell(row=data_row, column=8).coordinate
         ws.cell(row=data_row, column=9,
                 value=f'=IF(OR({dd_ref}=0,{dd_ref}=""),"",'
-                      f'({ACCOUNT_REF}*{DDTOL_REF})/{dd_ref})'
+                      f'{allow_ref}/{dd_ref})'
                 ).number_format = '0.00"x"'
 
-        # Monthly % = (net / account) / months
+        # Monthly %
+        # - fixed lot: linear monthly estimate
+        # - auto risk: compounded monthly estimate from total return
         net_ref = ws.cell(row=data_row, column=6).coordinate
         months_ref = ws.cell(row=data_row, column=5).coordinate
         ws.cell(row=data_row, column=10,
                 value=f'=IF(OR({ACCOUNT_REF}=0,{months_ref}=0,{months_ref}=""),"",'
-                      f'({net_ref}/{ACCOUNT_REF})/{months_ref})'
+                      f'IF($K{data_row}="AUTO_RISK",'
+                      f'IF(1+({net_ref}/{ACCOUNT_REF})<=0,-1,POWER(1+({net_ref}/{ACCOUNT_REF}),1/{months_ref})-1),'
+                      f'({net_ref}/{ACCOUNT_REF})/{months_ref}))'
                 ).number_format = "0.00%"
 
         # Apply borders and formula font color
-        for col_idx in range(1, 11):
+        for col_idx in range(1, 12):
             cell = ws.cell(row=data_row, column=col_idx)
             cell.border = border
             if col_idx in (8, 9, 10):  # formula cells
                 cell.font = black_font
+
+        if risk_mode == "AUTO_RISK":
+            ws.cell(row=data_row, column=8).number_format = "0.00%"
 
         data_row += 1
 
@@ -1619,12 +1865,13 @@ def write_portfolio_xlsx(strategies, combined, out_path, title,
     ws.cell(row=data_row, column=3, value=combined["max_open_positions"]).alignment = center
     ws.cell(row=data_row, column=4, value="").alignment = center
 
-    p_months_cell = ws.cell(row=data_row, column=5, value=round(p_months, 1))
+    p_months_cell = ws.cell(row=data_row, column=5, value=float(p_months))
     p_months_cell.font = Font(name="Arial", size=10, bold=True, color="0000FF")
     p_months_cell.fill = input_fill
     p_months_cell.number_format = "0.0"
 
-    p_net = ws.cell(row=data_row, column=6, value=round(combined["net"], 2))
+    p_net = ws.cell(row=data_row, column=6,
+                    value=f'=SUM(F{first_data_row}:F{last_data_row})')
     p_net.font = Font(name="Arial", size=10, bold=True, color="0000FF")
     p_net.fill = input_fill
     p_net.number_format = '"$"#,##0.00;("$"#,##0.00);-'
@@ -1634,32 +1881,47 @@ def write_portfolio_xlsx(strategies, combined, out_path, title,
     p_dd.fill = input_fill
     p_dd.number_format = '"$"#,##0.00;("$"#,##0.00);-'
 
+    portfolio_mode = (combined.get("risk_mode") or "FIXED_LOT").upper()
+    portfolio_formula_mode = "FIXED_LOT" if portfolio_mode == "MIXED" else portfolio_mode
+    if portfolio_formula_mode == "AUTO_RISK":
+        p_dd.value = combined.get("max_dd_pct", 0.0) / 100.0
+        p_dd.number_format = "0.00%"
+
     ws.cell(row=data_row, column=8,
-            value=f"={ACCOUNT_REF}*{DDTOL_REF}"
+            value=(f'=IF($K{data_row}="AUTO_RISK",{DDTOL_REF},'
+                   f'{ACCOUNT_REF}*{DDTOL_REF})')
             ).number_format = '"$"#,##0.00'
     p_dd_ref = ws.cell(row=data_row, column=7).coordinate
+    p_allow_ref = ws.cell(row=data_row, column=8).coordinate
     ws.cell(row=data_row, column=9,
             value=f'=IF(OR({p_dd_ref}=0,{p_dd_ref}=""),"",'
-                  f'({ACCOUNT_REF}*{DDTOL_REF})/{p_dd_ref})'
+                  f'{p_allow_ref}/{p_dd_ref})'
             ).number_format = '0.00"x"'
     p_net_ref = ws.cell(row=data_row, column=6).coordinate
     p_months_ref = ws.cell(row=data_row, column=5).coordinate
     ws.cell(row=data_row, column=10,
             value=f'=IF(OR({ACCOUNT_REF}=0,{p_months_ref}=0,{p_months_ref}=""),"",'
-                  f'({p_net_ref}/{ACCOUNT_REF})/{p_months_ref})'
+              f'IF($K{data_row}="AUTO_RISK",'
+              f'IF(1+({p_net_ref}/{ACCOUNT_REF})<=0,-1,POWER(1+({p_net_ref}/{ACCOUNT_REF}),1/{p_months_ref})-1),'
+              f'({p_net_ref}/{ACCOUNT_REF})/{p_months_ref}))'
             ).number_format = "0.00%"
 
-    for col_idx in range(1, 11):
+    ws.cell(row=data_row, column=11, value=portfolio_mode).font = bold_font
+
+    for col_idx in range(1, 12):
         cell = ws.cell(row=data_row, column=col_idx)
         cell.fill = total_fill if col_idx not in (5, 6, 7) else input_fill
         cell.border = border
         if col_idx in (1, 8, 9, 10):
             cell.font = Font(name="Arial", size=10, bold=True)
 
+    if portfolio_formula_mode == "AUTO_RISK":
+        ws.cell(row=data_row, column=8).number_format = "0.00%"
+
     # ── Column widths ────────────────────────────────────────────────
     widths = {
         "A": 18, "B": 9, "C": 10, "D": 11, "E": 10,
-        "F": 15, "G": 15, "H": 15, "I": 16, "J": 13,
+        "F": 15, "G": 15, "H": 15, "I": 16, "J": 13, "K": 12,
     }
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
@@ -1832,7 +2094,7 @@ def export_top_portfolios(top: List[Dict], strategies: List[Dict],
             rescale_strategy(strategies[idx], scale)
             for idx, scale in zip(r["strategy_indices"], r["scales"])
         ]
-        sub_combined = combine_curves(sub_strategies)
+        sub_combined = combine_curves(sub_strategies, account_size=account_size)
 
         sub_stats_lines = build_stats_text(
             sub_strategies, sub_combined,
@@ -1885,8 +2147,8 @@ def export_top_portfolios(top: List[Dict], strategies: List[Dict],
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Build the same portfolio twice: once from bars and once "
-                    "from ticks, then write separate reports for comparison.",
+        description="Build portfolio reports from selected curve sources "
+                    "(bars by default, optional ticks).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("--strategy", action="append", required=True,
@@ -1897,12 +2159,14 @@ def main() -> int:
                     help="Output directory for the portfolio report.")
     ap.add_argument("--title", default="Portfolio Backtest",
                     help="Title for the HTML report.")
-    ap.add_argument("--ticks-dir", required=True,
-                    help="Directory containing per-symbol tick CSV files.")
+    ap.add_argument("--ticks-dir", default="",
+                    help="Directory containing per-symbol tick CSV files (required only when ticks source is enabled).")
     ap.add_argument("--tick-suffix", default="_GMT+2_US-DST.csv",
                     help="Suffix appended to each symbol to build tick filename.")
     ap.add_argument("--tick-gmt", type=int, default=2,
                     help="Timezone offset used to parse tick timestamps.")
+    ap.add_argument("--curve-sources", default="bars",
+                    help="Comma-separated sources to run: bars,ticks. Default: bars")
     ap.add_argument("--account-size", type=float, default=10000.0,
                     metavar="AMOUNT",
                     help="Notional account size in $ used for risk metrics: "
@@ -1924,10 +2188,28 @@ def main() -> int:
 
     os.makedirs(args.out_dir, exist_ok=True)
 
+    requested_sources = [s.strip().lower() for s in (args.curve_sources or "").split(",") if s.strip()]
+    if not requested_sources:
+        requested_sources = ["bars"]
+    valid_sources = {"bars", "ticks"}
+    invalid = [s for s in requested_sources if s not in valid_sources]
+    if invalid:
+        print(f"ERROR: invalid --curve-sources value(s): {', '.join(invalid)}. Use bars,ticks", file=sys.stderr)
+        return 1
+    sources_to_run: List[str] = []
+    for src in requested_sources:
+        if src not in sources_to_run:
+            sources_to_run.append(src)
+
+    if "ticks" in sources_to_run and not args.ticks_dir:
+        print("ERROR: --ticks-dir is required when ticks source is enabled.", file=sys.stderr)
+        return 1
+
     try:
         configs = [parse_strategy_arg(s) for s in args.strategy]
-        for cfg in configs:
-            cfg["tick_path"] = os.path.join(args.ticks_dir, cfg["symbol"] + args.tick_suffix)
+        if args.ticks_dir:
+            for cfg in configs:
+                cfg["tick_path"] = os.path.join(args.ticks_dir, cfg["symbol"] + args.tick_suffix)
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
@@ -1941,13 +2223,14 @@ def main() -> int:
         for cfg in configs:
             try:
                 strategies.append(load_strategy(cfg, args.backtest_months, curve_source=curve_source,
-                                                tick_gmt=args.tick_gmt))
+                                                tick_gmt=args.tick_gmt,
+                                                account_size=args.account_size))
             except (FileNotFoundError, ValueError) as e:
                 print(f"\nERROR loading {cfg['symbol']} for {source_name}: {e}", file=sys.stderr)
                 raise
 
         print("\nCombining curves on unified daily timeline…")
-        combined = combine_curves(strategies)
+        combined = combine_curves(strategies, account_size=args.account_size)
 
         stats_lines = build_stats_text(
             strategies, combined,
@@ -1978,8 +2261,8 @@ def main() -> int:
                       "Run: pip install openpyxl")
 
     try:
-        run_source("bars", "bars")
-        run_source("ticks", "ticks")
+        for source_name in sources_to_run:
+            run_source(source_name, source_name)
     except (FileNotFoundError, ValueError):
         return 1
 

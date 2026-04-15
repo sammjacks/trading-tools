@@ -3,12 +3,11 @@ setlocal EnableExtensions
 REM stage1_real_results_vs_backtest comparison driver
 REM
 REM Configuration:
-REM   - Set real_statement: path to real account HTML statement from broker
-REM   - Set backtest_report: path to backtest HTML report from MT4/MT5 tester
+REM   - Set real_statement: path to the primary real account HTML/CSV statement
+REM   - Set backtest_report: path to the comparison source (backtest HTML or another live HTML/CSV file)
 REM   - Set ticks_dir: folder containing SYMBOL_GMT+N_US-DST.csv
 REM   - Set symbol: currency pair to compare (REQUIRED, e.g. "EURUSD")
 REM              (used to filter out deposits, withdrawals, and other non-trading pairs)
-REM   - Set magic_number: optional filter (empty = all magic numbers)
 REM   - Set broker_gmt: broker timezone offset (e.g. 2, -5, 0)
 REM   - Set tick_gmt: tick data timezone offset
 REM   - Set output_dir: where to save the comparison HTML report
@@ -23,20 +22,34 @@ REM Keep console open after run when double-clicked.
 REM Set to 0 if you run from an existing terminal and do not want pause.
 set keep_window_open=1
 
-set real_statement=trades.csv
-set backtest_report=Backtest.html
-set ticks_dir=D:\SEIF_system_new\1year\Data\darwinex
-set symbol=EURUSD
-set magic_number=
+set real_statement=michel.html
+set backtest_report=ats.html
+set real_magic=
+set compare_magic=
+set real_scale=
+set compare_scale=
+REM Optional start date override. Leave blank for shared overlap, or use YYYY.MM.DD (example: 2026.03.09)
+set start_date=
+set ticks_dir=D:\SEIF_system_new\Michel_Start
+set symbol=EURGBP
 set broker_gmt=2
 set tick_gmt=2
 set output_dir=.\results
-set report_title=Real vs Backtest - Stage 1
+set report_title=Results Comparison - Stage 1
 
 if "%symbol%"=="" (
     call :die "ERROR: symbol must be set (e.g., EURUSD, GBPUSD)"
 )
 
+if not exist "%real_statement%" (
+    set "alt_statement="
+    if /I "%real_statement:~-5%"==".html" set "alt_statement=%real_statement:~0,-1%"
+    if /I "%real_statement:~-4%"==".htm" set "alt_statement=%real_statement%l"
+    if defined alt_statement if exist "%alt_statement%" (
+        echo Using alternate real statement path: %alt_statement%
+        set "real_statement=%alt_statement%"
+    )
+)
 if not exist "%real_statement%" (
     call :die "ERROR: real statement file not found: %real_statement%"
 )
@@ -72,26 +85,37 @@ if "%PYTHON_CMD%"=="" (
 
 echo Running comparison with:
 echo   real_statement: %real_statement%
-echo   backtest_report: %backtest_report%
+echo   comparison_source: %backtest_report%
 echo   ticks_dir: %ticks_dir%
 echo   expected_tick_file: %expected_tick_file%
 echo   symbol: %symbol%
-echo   magic_number: %magic_number%
 echo   broker_gmt: %broker_gmt%
 echo   tick_gmt: %tick_gmt%
+if not "%start_date%"=="" echo   start_date: %start_date%
+if not "%real_magic%"=="" echo   real_magic: %real_magic%
+if not "%compare_magic%"=="" echo   compare_magic: %compare_magic%
+if not "%real_scale%"=="" echo   real_scale: %real_scale%
+if not "%compare_scale%"=="" echo   compare_scale: %compare_scale%
 echo.
 echo Starting analysis...
+
+set EXTRA_ARGS=
+if not "%real_magic%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --magic "%real_magic%"
+if not "%compare_magic%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --backtest-magic "%compare_magic%"
+if not "%real_scale%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --real-scale "%real_scale%"
+if not "%compare_scale%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --backtest-scale "%compare_scale%"
+if not "%start_date%"=="" set EXTRA_ARGS=%EXTRA_ARGS% --start-date "%start_date%"
 
 %PYTHON_CMD% -u stage1_real_results_vs_backtest.py ^
     --real-statement "%real_statement%" ^
     --backtest "%backtest_report%" ^
     --ticks-dir "%ticks_dir%" ^
     --symbol "%symbol%" ^
-    --magic "%magic_number%" ^
     --broker-gmt %broker_gmt% ^
     --tick-gmt %tick_gmt% ^
     --out-dir "%output_dir%" ^
-    --title "%report_title%"
+    --title "%report_title%" ^
+    %EXTRA_ARGS%
 
 if errorlevel 1 (
     echo.
@@ -100,7 +124,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo ✓ Comparison complete. Report: %output_dir%\real_vs_backtest_comparison.html
+echo Comparison complete. Report: %output_dir%\real_vs_backtest_comparison.html
 start "" "%output_dir%\real_vs_backtest_comparison.html"
 if "%keep_window_open%"=="1" pause
 exit /b 0
