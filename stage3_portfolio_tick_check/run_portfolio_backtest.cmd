@@ -15,6 +15,9 @@ REM    or comment out its 4 "set" lines by prefixing each with REM.
 REM    A strategy is included if and only if its STRATn_BT variable
 REM    is non-empty.
 REM
+REM    STRATn_BT can point to either a Strategy Tester HTML report
+REM    (.htm/.html) or a live trade export such as trades.csv.
+REM
 REM  DO NOT strip "REM" from header comment lines — only from "set"
 REM  lines. Lines that start with REM are comments; everything else
 REM  is executed by cmd and will error out if it isn't a command.
@@ -40,15 +43,16 @@ REM  Each strategy's bars file is loaded from:
 REM      %BARS_DIR%\{SYMBOL}%BARS_SUFFIX%
 REM  Change BARS_DIR if your bars live somewhere else, and change
 REM  BARS_SUFFIX if your naming convention is different.
-set BARS_DIR=D:\Work\M5_tillStartApril
+set BARS_DIR=D:\SEIF_system_new\Michel_Start
 set BARS_SUFFIX=_GMT+2_US-DST_M5.csv
 
 REM --- Ticks folder and filename pattern ---
 REM  Each strategy's tick file is auto-derived as:
 REM      %TICKS_DIR%\{SYMBOL}%TICKS_SUFFIX%
-set TICKS_DIR=D:\Work\Ticks
+set TICKS_DIR=D:\SEIF_system_new\Michel_Start
 set TICKS_SUFFIX=_GMT+2_US-DST.csv
 set TICK_GMT=2
+set CURVE_SOURCES=auto
 
 REM === Strategy 1 ===
 set STRAT1_SYMBOL=AUDUSD
@@ -122,7 +126,8 @@ REM ==============================================================
 
 set CMD=%PYTHON% "%SCRIPT%" --out-dir "%OUT_DIR%" --title "%TITLE%"
 set CMD=%CMD% --account-size %ACCOUNT_SIZE% --dd-tolerance %DD_TOLERANCE%
-set CMD=%CMD% --ticks-dir "%TICKS_DIR%" --tick-suffix "%TICKS_SUFFIX%" --tick-gmt %TICK_GMT%
+set CMD=%CMD% --curve-sources "%CURVE_SOURCES%"
+if not "%TICKS_DIR%"=="" set CMD=%CMD% --ticks-dir "%TICKS_DIR%" --tick-suffix "%TICKS_SUFFIX%" --tick-gmt %TICK_GMT%
 if not "%BACKTEST_MONTHS%"=="" set CMD=%CMD% --backtest-months %BACKTEST_MONTHS%
 
 if not "%STRAT1_BT%"=="" set CMD=%CMD% --strategy "%STRAT1_SYMBOL%|%STRAT1_BT%|%BARS_DIR%\%STRAT1_SYMBOL%%BARS_SUFFIX%|%STRAT1_SCALE%|%STRAT1_GMT%"

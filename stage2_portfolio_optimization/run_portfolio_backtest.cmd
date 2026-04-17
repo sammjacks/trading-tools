@@ -40,8 +40,14 @@ REM  Each strategy's bars file is loaded from:
 REM      %BARS_DIR%\{SYMBOL}%BARS_SUFFIX%
 REM  Change BARS_DIR if your bars live somewhere else, and change
 REM  BARS_SUFFIX if your naming convention is different.
-set BARS_DIR=D:\Work\M5_tillStartApril
+set BARS_DIR=D:\SEIF_system_new\Michel_Start
 set BARS_SUFFIX=_GMT+2_US-DST_M5.csv
+
+REM --- Ticks folder and filename pattern ---
+set TICKS_DIR=D:\SEIF_system_new\Michel_Start
+set TICKS_SUFFIX=_GMT+2_US-DST.csv
+set TICK_GMT=2
+set CURVE_SOURCES=auto
 
 REM === Strategy 1 ===
 set STRAT1_SYMBOL=AUDUSD
@@ -139,6 +145,8 @@ REM ==============================================================
 
 set CMD=%PYTHON% "%SCRIPT%" --out-dir "%OUT_DIR%" --title "%TITLE%"
 set CMD=%CMD% --account-size %ACCOUNT_SIZE% --dd-tolerance %DD_TOLERANCE%
+set CMD=%CMD% --curve-sources "%CURVE_SOURCES%"
+if not "%TICKS_DIR%"=="" set CMD=%CMD% --ticks-dir "%TICKS_DIR%" --tick-suffix "%TICKS_SUFFIX%" --tick-gmt %TICK_GMT%
 if not "%BACKTEST_MONTHS%"=="" set CMD=%CMD% --backtest-months %BACKTEST_MONTHS%
 if "%OPTIMIZE%"=="1" set CMD=%CMD% --optimize --min-safety-factor %MIN_SAFETY_FACTOR% --min-monthly-pct %MIN_MONTHLY_PCT% --min-strategies %MIN_STRATEGIES% --max-strategies %MAX_STRATEGIES% --max-scale %MAX_SCALE% --top-n %TOP_N%
 

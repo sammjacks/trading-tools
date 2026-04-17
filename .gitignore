@@ -9,9 +9,7 @@ venv/
 # Local secrets and broker credentials
 *.env
 *.env.*
-**/broker_login.txt
-**/broker_password.txt
-**/broker_server.txt
+**/broker_*
 
 # MetaTrader / MT5 generated runtime data
 **/Bases/
@@ -22,6 +20,7 @@ venv/
 **/MQL5/Logs/
 **/WebView2/
 **/EBWebView/
+**/Meta*
 
 # Portable terminals and local safe copies
 account_review/MT5_BT6/

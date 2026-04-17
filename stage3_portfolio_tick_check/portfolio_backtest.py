@@ -15,6 +15,7 @@ sizes, so floating-loss drawdowns scale correctly alongside closed
 profits. Default scale is 1.0.
 
 Supported backtest formats (auto-detected):
+  * Live trade CSV export (Status, Symbol, Type, Open/Close Time, etc.)
   * MT4 live account statement (UTF-8 HTML, 14-column trade rows)
   * MT4 strategy tester report (UTF-8 HTML, separate open/close rows)
   * MT5 strategy tester report (UTF-16 HTML, Deals table with in/out)
@@ -138,24 +139,32 @@ def _extract_rows(html_text: str) -> List[List[str]]:
 # ────────────────────────────────────────────────────────────────────────────
 def _detect_format(html_text: str, rows: List[List[str]]) -> str:
     """Return one of: 'mt5_tester', 'mt4_tester', 'mt4_live'."""
-    if re.search(r">\s*Deals\s*<", html_text) and "Direction" in html_text:
+    if re.search(r">\s*Deals\s*<", html_text, re.IGNORECASE) and re.search(r"Direction", html_text, re.IGNORECASE):
         for row in rows:
             if len(row) >= 13 and row[4].strip().lower() in ("in", "out"):
                 return "mt5_tester"
 
     has_tester_open = any(
-        len(row) == 9 and row[2].strip().lower() in ("buy", "sell")
+        len(row) >= 6 and row[2].strip().lower() in ("buy", "sell")
         for row in rows
     )
     has_tester_close = any(
-        len(row) == 10 and row[2].strip().lower() == "close"
+        len(row) >= 6 and _is_mt4_tester_close_type(row[2])
         for row in rows
     )
-    if has_tester_open and has_tester_close:
+    has_tester_header = any(
+        {"#", "time", "type", "order", "size", "price", "profit", "balance"}.issubset(
+            {_normalize_header_name(c) for c in row if c.strip()}
+        )
+        for row in rows
+    )
+    if "strategy tester report" in html_text.lower() and (has_tester_header or has_tester_open or has_tester_close):
+        return "mt4_tester"
+    if has_tester_header or (has_tester_open and has_tester_close):
         return "mt4_tester"
 
     has_live_trade = any(
-        len(row) == 14 and row[2].strip().lower() in ("buy", "sell")
+        len(row) >= 13 and row[2].strip().lower() in ("buy", "sell")
         for row in rows
     )
     if has_live_trade:
@@ -183,6 +192,29 @@ def _parse_dt(s: str, offset: timezone) -> int:
 def _parse_num(s: str) -> float:
     """Parse a number that may use space as thousands separator."""
     return float(s.replace(" ", "").replace(",", ""))
+
+
+def _normalize_header_name(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip().lower()).rstrip(":")
+
+
+def _is_mt4_tester_close_type(value: str) -> bool:
+    token = re.sub(r"\s+", " ", (value or "").strip().lower())
+    if not token:
+        return False
+    if token in (
+        "close",
+        "t/p",
+        "s/l",
+        "tp",
+        "sl",
+        "stop loss",
+        "take profit",
+        "close at stop",
+        "close at limit",
+    ):
+        return True
+    return token.startswith("close")
 
 
 def _parse_mt4_live(rows, offset, symbol_filter):
@@ -215,40 +247,50 @@ def _parse_mt4_live(rows, offset, symbol_filter):
 def _parse_mt4_tester(rows, offset):
     opens: Dict[int, Dict] = {}
     trades = []
+    ignored_types = {"modify", "delete", "balance", "credit"}
+
     for row in rows:
-        if len(row) == 9:
-            ttype = row[2].strip().lower()
-            if ttype in ("buy", "sell"):
-                try:
-                    order = int(row[3])
-                    opens[order] = {
-                        "type": ttype,
-                        "ts": _parse_dt(row[1], offset),
-                        "price": float(row[5]),
-                        "lots": float(row[4]),
-                    }
-                except (ValueError, IndexError):
-                    pass
+        if len(row) < 6:
             continue
-        if len(row) == 10 and row[2].strip().lower() == "close":
+
+        ttype = row[2].strip().lower()
+        if ttype in ("buy", "sell"):
             try:
-                order = int(row[3])
-                if order not in opens:
-                    continue
-                o = opens.pop(order)
-                trades.append({
-                    "type": o["type"],
-                    "ts": o["ts"],
-                    "close_ts": _parse_dt(row[1], offset),
-                    "price": o["price"],
-                    "close_price": float(row[5]),
-                    "lots": o["lots"],
-                    "profit": _parse_num(row[8]),
-                    "commission": 0.0,
-                    "swap": 0.0,
-                })
+                order = int(float(row[3]))
+                opens[order] = {
+                    "type": ttype,
+                    "ts": _parse_dt(row[1], offset),
+                    "price": _parse_num(row[5]),
+                    "lots": _parse_num(row[4]),
+                }
             except (ValueError, IndexError):
+                pass
+            continue
+
+        if ttype in ignored_types or not _is_mt4_tester_close_type(ttype):
+            continue
+
+        try:
+            order = int(float(row[3]))
+            if order not in opens:
                 continue
+            if len(row) <= 8 or not row[8].strip():
+                continue
+
+            o = opens.pop(order)
+            trades.append({
+                "type": o["type"],
+                "ts": o["ts"],
+                "close_ts": _parse_dt(row[1], offset),
+                "price": o["price"],
+                "close_price": _parse_num(row[5]),
+                "lots": o["lots"],
+                "profit": _parse_num(row[8]),
+                "commission": 0.0,
+                "swap": 0.0,
+            })
+        except (ValueError, IndexError):
+            continue
     return trades
 
 
@@ -326,13 +368,66 @@ def _parse_mt5_tester(rows, offset, symbol_filter):
     return trades
 
 
+def _parse_live_csv(path: str, broker_gmt: int,
+                    symbol_filter: Optional[str]) -> List[Dict]:
+    """Parse live trade CSV export (Status, Symbol, Type, Open/Close Time, etc.)."""
+    trades: List[Dict] = []
+    offset = timezone(timedelta(hours=broker_gmt))
+
+    with open(path, "r", encoding="utf-8-sig", newline="") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            if not row:
+                continue
+
+            status = (row.get("Status") or "").strip().lower()
+            if status and status != "closed":
+                continue
+
+            ttype = (row.get("Type") or "").strip().lower()
+            if ttype not in ("buy", "sell"):
+                continue
+
+            symbol = (row.get("Symbol") or "").strip().upper()
+            if symbol_filter and symbol_filter.upper() not in symbol:
+                continue
+
+            try:
+                open_time = (row.get("Open Time") or "").strip()
+                close_time = (row.get("Close Time") or "").strip()
+                if not open_time or not close_time:
+                    continue
+
+                trades.append({
+                    "type": ttype,
+                    "ts": _parse_dt(open_time, offset),
+                    "close_ts": _parse_dt(close_time, offset),
+                    "price": _parse_num((row.get("Open Price") or "0").strip()),
+                    "close_price": _parse_num((row.get("Close Price") or "0").strip()),
+                    "lots": _parse_num((row.get("Volume") or "0").strip()),
+                    "profit": _parse_num((row.get("Profit") or "0").strip()),
+                    "commission": _parse_num((row.get("Commission") or "0").strip()),
+                    "swap": _parse_num((row.get("Swap") or "0").strip()),
+                })
+            except (ValueError, TypeError):
+                continue
+
+    return trades
+
+
 def parse_backtest(path: str, broker_gmt: int,
                     symbol_filter: Optional[str]) -> Tuple[List[Dict], str]:
     """Auto-detect format and return (trades, format_name)."""
+    offset = timezone(timedelta(hours=broker_gmt))
+
+    if path.lower().endswith(".csv"):
+        trades = _parse_live_csv(path, broker_gmt, symbol_filter)
+        trades.sort(key=lambda t: t["ts"])
+        return trades, "live_csv"
+
     html_text = read_text_file(path)
     rows = _extract_rows(html_text)
     fmt = _detect_format(html_text, rows)
-    offset = timezone(timedelta(hours=broker_gmt))
 
     if fmt == "mt5_tester":
         trades = _parse_mt5_tester(rows, offset, symbol_filter)
@@ -842,15 +937,15 @@ COMBINED_COLOR = "#111111"
 
 def parse_strategy_arg(s: str) -> Dict:
     parts = [p.strip() for p in s.split("|")]
-    if len(parts) < 3:
+    if len(parts) < 2:
         raise ValueError(
-            f"--strategy needs at least SYMBOL|BACKTEST|BARS (got: {s!r})"
+            f"--strategy needs at least SYMBOL|BACKTEST (got: {s!r})"
         )
     symbol = parts[0]
     return {
         "symbol": symbol,
         "bt_path": parts[1],
-        "bars_path": parts[2],
+        "bars_path": parts[2] if len(parts) >= 3 else "",
         "scale": float(parts[3]) if len(parts) >= 4 and parts[3] else 1.0,
         "broker_gmt": int(parts[4]) if len(parts) >= 5 and parts[4] else 2,
         # 6th field is optional:
@@ -2165,8 +2260,8 @@ def main() -> int:
                     help="Suffix appended to each symbol to build tick filename.")
     ap.add_argument("--tick-gmt", type=int, default=2,
                     help="Timezone offset used to parse tick timestamps.")
-    ap.add_argument("--curve-sources", default="bars",
-                    help="Comma-separated sources to run: bars,ticks. Default: bars")
+    ap.add_argument("--curve-sources", default="auto",
+                    help="Comma-separated sources to run: auto,bars,ticks. Default: auto")
     ap.add_argument("--account-size", type=float, default=10000.0,
                     metavar="AMOUNT",
                     help="Notional account size in $ used for risk metrics: "
@@ -2188,23 +2283,6 @@ def main() -> int:
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    requested_sources = [s.strip().lower() for s in (args.curve_sources or "").split(",") if s.strip()]
-    if not requested_sources:
-        requested_sources = ["bars"]
-    valid_sources = {"bars", "ticks"}
-    invalid = [s for s in requested_sources if s not in valid_sources]
-    if invalid:
-        print(f"ERROR: invalid --curve-sources value(s): {', '.join(invalid)}. Use bars,ticks", file=sys.stderr)
-        return 1
-    sources_to_run: List[str] = []
-    for src in requested_sources:
-        if src not in sources_to_run:
-            sources_to_run.append(src)
-
-    if "ticks" in sources_to_run and not args.ticks_dir:
-        print("ERROR: --ticks-dir is required when ticks source is enabled.", file=sys.stderr)
-        return 1
-
     try:
         configs = [parse_strategy_arg(s) for s in args.strategy]
         if args.ticks_dir:
@@ -2212,6 +2290,36 @@ def main() -> int:
                 cfg["tick_path"] = os.path.join(args.ticks_dir, cfg["symbol"] + args.tick_suffix)
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+
+    requested_sources = [s.strip().lower() for s in (args.curve_sources or "auto").split(",") if s.strip()]
+    if not requested_sources:
+        requested_sources = ["auto"]
+
+    if "auto" in requested_sources:
+        sources_to_run: List[str] = []
+        has_bars = any((cfg.get("bars_path") or "").strip() and os.path.exists(cfg["bars_path"]) for cfg in configs)
+        has_ticks = bool(args.ticks_dir)
+        if has_bars:
+            sources_to_run.append("bars")
+        if has_ticks:
+            sources_to_run.append("ticks")
+        if not sources_to_run:
+            print("ERROR: no usable bars or ticks source was supplied.", file=sys.stderr)
+            return 1
+    else:
+        valid_sources = {"bars", "ticks"}
+        invalid = [s for s in requested_sources if s not in valid_sources]
+        if invalid:
+            print(f"ERROR: invalid --curve-sources value(s): {', '.join(invalid)}. Use auto,bars,ticks", file=sys.stderr)
+            return 1
+        sources_to_run = []
+        for src in requested_sources:
+            if src not in sources_to_run:
+                sources_to_run.append(src)
+
+    if "ticks" in sources_to_run and not args.ticks_dir:
+        print("ERROR: --ticks-dir is required when ticks source is enabled.", file=sys.stderr)
         return 1
 
     def run_source(source_name: str, curve_source: str) -> None:

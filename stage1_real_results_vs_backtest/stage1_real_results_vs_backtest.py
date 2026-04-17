@@ -73,6 +73,70 @@ def resolve_tick_file(ticks_dir: str, symbol: str, tick_gmt: int) -> str:
     )
 
 
+def _build_bar_filename(symbol: str, bar_gmt: int, timeframe: str = "M5") -> str:
+    base = build_tick_filename(symbol, bar_gmt)
+    stem, ext = os.path.splitext(base)
+    return f"{stem}_{timeframe.upper()}{ext or '.csv'}"
+
+
+def _resolve_bar_file(bars_dir: str, symbol: str, bar_gmt: int, timeframe: str = "M5") -> str:
+    filename = _build_bar_filename(symbol, bar_gmt, timeframe=timeframe)
+    path = os.path.join(bars_dir, filename)
+    if os.path.exists(path):
+        return path
+
+    if os.path.isdir(bars_dir):
+        symbol_prefix = f"{symbol.upper()}_GMT"
+        matches = [
+            name for name in os.listdir(bars_dir)
+            if name.upper().startswith(symbol_prefix) and name.upper().endswith(".CSV") and "_M" in name.upper()
+        ]
+        if matches:
+            matches.sort(key=lambda name: (0 if f"_{timeframe.upper()}.CSV" in name.upper() else 1, name.upper()))
+            return os.path.join(bars_dir, matches[0])
+
+    raise FileNotFoundError(
+        f"Expected bar file '{filename}' not found in '{bars_dir}'"
+    )
+
+
+def _load_bar_points(path: str,
+                     min_ts: Optional[int] = None,
+                     max_ts: Optional[int] = None) -> List[Dict]:
+    points: List[Dict] = []
+    processed = 0
+    skipped_outside_window = 0
+
+    with open(path, "r", encoding="utf-8") as fh:
+        reader = csv.reader(fh)
+        for row_num, row in enumerate(reader):
+            processed += 1
+            if len(row) < 5:
+                continue
+            try:
+                if row_num == 0 and row[0].strip().lower() in ("unix_ts", "time", "date", "datetime"):
+                    continue
+
+                ts = int(float(row[0]))
+                if min_ts is not None and ts < min_ts:
+                    skipped_outside_window += 1
+                    continue
+                if max_ts is not None and ts > max_ts:
+                    break
+
+                close_price = float(row[4])
+                points.append({"ts": ts, "bid": close_price, "ask": close_price})
+            except (ValueError, IndexError):
+                continue
+
+    print(
+        f"  Bar load complete: {processed:,} rows scanned, {len(points):,} kept"
+        f" ({skipped_outside_window:,} before window)",
+        flush=True,
+    )
+    return points
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # File reading with encoding auto-detection
 # ────────────────────────────────────────────────────────────────────────────
@@ -195,14 +259,22 @@ def _detect_format(html_text: str, rows: List[List[str]]) -> str:
                 return "mt5_tester"
 
     has_tester_open = any(
-        len(row) == 9 and row[2].strip().lower() in ("buy", "sell")
+        len(row) >= 6 and row[2].strip().lower() in ("buy", "sell")
         for row in rows
     )
     has_tester_close = any(
-        len(row) == 10 and row[2].strip().lower() == "close"
+        len(row) >= 6 and _is_mt4_tester_close_type(row[2])
         for row in rows
     )
-    if has_tester_open and has_tester_close:
+    has_tester_header = any(
+        {"#", "time", "type", "order", "size", "price", "profit", "balance"}.issubset(
+            {_normalize_header_name(c) for c in row if c.strip()}
+        )
+        for row in rows
+    )
+    if "strategy tester report" in html_text.lower() and (has_tester_header or has_tester_open or has_tester_close):
+        return "mt4_tester"
+    if has_tester_header or (has_tester_open and has_tester_close):
         return "mt4_tester"
 
     mt4_live_headers = {
@@ -411,43 +483,72 @@ def _parse_mt4_live(rows, offset, symbol_filter, magic_filter: Optional[str] = N
     return trades
 
 
+def _is_mt4_tester_close_type(value: str) -> bool:
+    token = re.sub(r"\s+", " ", (value or "").strip().lower())
+    if not token:
+        return False
+    if token in (
+        "close",
+        "t/p",
+        "s/l",
+        "tp",
+        "sl",
+        "stop loss",
+        "take profit",
+        "close at stop",
+        "close at limit",
+    ):
+        return True
+    return token.startswith("close")
+
+
 def _parse_mt4_tester(rows, offset):
     opens: Dict[int, Dict] = {}
     trades = []
+    ignored_types = {"modify", "delete", "balance", "credit"}
+
     for row in rows:
-        if len(row) == 9:
-            ttype = row[2].strip().lower()
-            if ttype in ("buy", "sell"):
-                try:
-                    order = int(row[3])
-                    opens[order] = {
-                        "type": ttype,
-                        "ts": _parse_dt(row[1], offset),
-                        "price": float(row[5]),
-                        "lots": float(row[4]),
-                    }
-                except (ValueError, IndexError):
-                    pass
+        if len(row) < 6:
             continue
-        if len(row) == 10 and row[2].strip().lower() == "close":
+
+        ttype = row[2].strip().lower()
+        if ttype in ("buy", "sell"):
             try:
-                order = int(row[3])
-                if order not in opens:
-                    continue
-                o = opens.pop(order)
-                trades.append({
-                    "type": o["type"],
-                    "ts": o["ts"],
-                    "close_ts": _parse_dt(row[1], offset),
-                    "price": o["price"],
-                    "close_price": float(row[5]),
-                    "lots": o["lots"],
-                    "profit": _parse_num(row[8]),
-                    "commission": 0.0,
-                    "swap": 0.0,
-                })
+                order = int(float(row[3]))
+                opens[order] = {
+                    "type": ttype,
+                    "ts": _parse_dt(row[1], offset),
+                    "price": _parse_num(row[5]),
+                    "lots": _parse_num(row[4]),
+                }
             except (ValueError, IndexError):
+                pass
+            continue
+
+        if ttype in ignored_types or not _is_mt4_tester_close_type(ttype):
+            continue
+
+        try:
+            order = int(float(row[3]))
+            if order not in opens:
                 continue
+            if len(row) <= 8 or not row[8].strip():
+                continue
+
+            o = opens.pop(order)
+            trades.append({
+                "type": o["type"],
+                "ts": o["ts"],
+                "close_ts": _parse_dt(row[1], offset),
+                "price": o["price"],
+                "close_price": _parse_num(row[5]),
+                "lots": o["lots"],
+                "profit": _parse_num(row[8]),
+                "commission": 0.0,
+                "swap": 0.0,
+            })
+        except (ValueError, IndexError):
+            continue
     return trades
 
 
@@ -1639,8 +1740,10 @@ def main() -> int:
     ap.add_argument("--backtest-scale", "--compare-scale", action="append", dest="backtest_scales",
                     metavar="X",
                     help="Optional scale factor for each comparison source. Leave blank to auto-detect. Repeatable.")
-    ap.add_argument("--ticks-dir", required=True, metavar="PATH",
-                    help="Folder containing tick CSV named SYMBOL_GMT+N_US-DST.csv")
+    ap.add_argument("--ticks-dir", default="", metavar="PATH",
+                    help="Optional tick folder containing SYMBOL_GMT+N_US-DST.csv for higher-resolution equity mapping.")
+    ap.add_argument("--bars-dir", "--bar-dir", dest="bars_dir", default="", metavar="PATH",
+                    help="Optional bar folder used for bar-based equity mapping before tick refinement.")
     ap.add_argument("--symbol", required=True, metavar="SYMBOL",
                     help="Currency pair to compare (e.g., EURUSD, GBPUSD; required to filter deposits/withdrawals)")
     ap.add_argument("--magic", default="", metavar="N",
@@ -1649,6 +1752,8 @@ def main() -> int:
                     help="Broker timezone offset (default 2)")
     ap.add_argument("--tick-gmt", type=int, default=2, metavar="N",
                     help="Tick data timezone offset (default 2)")
+    ap.add_argument("--bar-gmt", type=int, default=2, metavar="N",
+                    help="Bar data timezone offset (default 2)")
     ap.add_argument("--start-date", default="", metavar="YYYY.MM.DD",
                     help="Optional comparison start date. Leave blank to use the shared overlap automatically.")
     ap.add_argument("--title", default="Real vs Comparison Results",
@@ -1730,27 +1835,79 @@ def main() -> int:
         elif manual_start_ts is not None:
             tick_window_min_ts = manual_start_ts
 
-        print("Loading tick data…")
-        tick_file = resolve_tick_file(args.ticks_dir, args.symbol, args.tick_gmt)
-        print(f"  Tick file: {tick_file}")
-        ticks = load_ticks(tick_file, args.tick_gmt, tick_window_min_ts, tick_window_max_ts)
-        print(f"  {len(ticks)} ticks loaded")
-        tick_min_ts: Optional[int] = ticks[0]["ts"] if ticks else None
-        tick_max_ts: Optional[int] = ticks[-1]["ts"] if ticks else None
+        print("Loading market data…")
+        bar_points: List[Dict] = []
+        ticks: List[Dict] = []
+        curve_source = "trade-event"
         curve_note = (
-            f"Equity overlay shows a downsampled intraday mark-to-market view built from {len(ticks):,} ticks."
-            if ticks else
-            "No overlapping tick coverage was available for this trade window, so the overlay falls back to realised trade-event equity steps."
+            "No overlapping bar or tick coverage was available for this trade window, "
+            "so the overlay falls back to realised trade-event equity steps."
         )
 
-        # Clip all trades to the exact comparison window so older baskets do not distort the overlap.
-        real_trades = clip_trades_to_window(real_trades, tick_min_ts, tick_max_ts, ticks)
-        print(f"  Real trades in tick window: {len(real_trades)}")
+        if args.bars_dir.strip():
+            try:
+                bar_file = _resolve_bar_file(args.bars_dir, args.symbol, args.bar_gmt)
+                print(f"  Bar file: {bar_file}")
+                bar_points = _load_bar_points(bar_file, tick_window_min_ts, tick_window_max_ts)
+                print(f"  {len(bar_points)} bar points loaded")
+                if bar_points:
+                    curve_source = "bar"
+                    curve_note = (
+                        f"Equity overlay first mapped the window using {len(bar_points):,} bar points "
+                        "from the local archive."
+                    )
+            except Exception as exc:
+                print(f"  WARNING: bar load skipped: {exc}")
+
+        if args.ticks_dir.strip():
+            try:
+                tick_file = resolve_tick_file(args.ticks_dir, args.symbol, args.tick_gmt)
+                print(f"  Tick file: {tick_file}")
+                ticks = load_ticks(tick_file, args.tick_gmt, tick_window_min_ts, tick_window_max_ts)
+                print(f"  {len(ticks)} ticks loaded")
+                if ticks:
+                    if bar_points:
+                        curve_source = "bar+tick"
+                        curve_note = (
+                            f"Bar data was loaded first ({len(bar_points):,} bar points), and tick data was then applied "
+                            f"for the final higher-resolution mark-to-market overlay from {len(ticks):,} ticks."
+                        )
+                    else:
+                        curve_source = "tick"
+                        curve_note = (
+                            f"Equity overlay shows a downsampled intraday mark-to-market view built from {len(ticks):,} ticks."
+                        )
+            except Exception as exc:
+                print(f"  WARNING: tick load skipped: {exc}")
+
+        curve_min_ts = tick_window_min_ts
+        curve_max_ts = tick_window_max_ts
+        if bar_points:
+            curve_min_ts = bar_points[0]["ts"]
+            curve_max_ts = bar_points[-1]["ts"]
+        if ticks:
+            curve_min_ts = ticks[0]["ts"]
+            curve_max_ts = ticks[-1]["ts"]
+
+        # Clip all trades to the best available comparison window so older baskets do not distort the overlap.
+        base_points = bar_points if bar_points else None
+        real_trades = clip_trades_to_window(real_trades, curve_min_ts, curve_max_ts, base_points)
+        print(f"  Real trades in comparison window: {len(real_trades)}")
 
         filtered_bt_trades: List[List[Dict]] = []
         for bt_trades_raw in all_bt_trades:
-            bt_trades = clip_trades_to_window(bt_trades_raw, tick_min_ts, tick_max_ts, ticks)
+            bt_trades = clip_trades_to_window(bt_trades_raw, curve_min_ts, curve_max_ts, base_points)
             filtered_bt_trades.append(bt_trades)
+
+        if ticks:
+            real_trades = clip_trades_to_window(real_trades, curve_min_ts, curve_max_ts, ticks)
+            filtered_bt_trades = [
+                clip_trades_to_window(bt_trades, curve_min_ts, curve_max_ts, ticks)
+                for bt_trades in filtered_bt_trades
+            ]
+
+        curve_points = ticks if ticks else bar_points
+        print(f"  Equity mapping: {curve_source}")
 
         real_scale_factor, bt_scale_factors, scaling_rows = _resolve_scale_plan(
             real_trades,
@@ -1770,7 +1927,7 @@ def main() -> int:
         scaled_real_trades = _scale_trades(real_trades, real_scale_factor)
         print("Building real equity curve…")
         display_tz = timezone(timedelta(hours=args.broker_gmt))
-        real_curves = build_equity_curve_from_ticks(scaled_real_trades, ticks)
+        real_curves = build_equity_curve_from_ticks(scaled_real_trades, curve_points)
         real_chart_labels, real_chart_eq = curves_to_chart_series(real_curves, display_tz)
         real_labels_d, _real_bal, real_eq = curves_to_daily(real_curves, display_tz)
         real_stats = compute_stats(scaled_real_trades)
@@ -1801,7 +1958,7 @@ def main() -> int:
                 print(f"  Applied scaling to {bt_name}: {bt_scale_factors[idx]:.2f}x")
 
             scaled_bt_trades = _scale_trades(bt_trades, bt_scale_factors[idx] if idx < len(bt_scale_factors) else 1.0)
-            bt_curves = build_equity_curve_from_ticks(scaled_bt_trades, ticks)
+            bt_curves = build_equity_curve_from_ticks(scaled_bt_trades, curve_points)
             bt_chart_labels, bt_chart_eq = curves_to_chart_series(bt_curves, display_tz)
             bt_labels_d, _bt_bal, bt_eq = curves_to_daily(bt_curves, display_tz)
             bt_stats = compute_stats(scaled_bt_trades)

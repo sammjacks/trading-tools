@@ -6,6 +6,7 @@ This is a stage1-style single-source checker:
 - supports live CSV, MT4 HTM/HTML, MT5 HTML/tester exports
 - applies the same symbol / magic / date filters
 - builds an equity review HTML with balance vs equity and summary stats
+  using bar data, tick data, or a realised trade-event fallback
 - optionally adds extra strategies in a stage3-style pipe format and writes
   a combined portfolio HTML and xlsx summary
 
@@ -26,6 +27,7 @@ Examples:
 """
 
 import argparse
+import csv
 import html as html_lib
 import importlib.util
 import json
@@ -224,6 +226,70 @@ def _statement_path_seems_valid(path: str) -> bool:
     return Path(resolved).exists()
 
 
+def _build_bar_filename(symbol: str, bar_gmt: int, timeframe: str = "M5") -> str:
+    base = _STAGE1.build_tick_filename(symbol, bar_gmt)
+    stem, ext = os.path.splitext(base)
+    return f"{stem}_{timeframe.upper()}{ext or '.csv'}"
+
+
+def _resolve_bar_file(bars_dir: str, symbol: str, bar_gmt: int, timeframe: str = "M5") -> str:
+    filename = _build_bar_filename(symbol, bar_gmt, timeframe=timeframe)
+    path = os.path.join(bars_dir, filename)
+    if os.path.exists(path):
+        return path
+
+    if os.path.isdir(bars_dir):
+        symbol_prefix = f"{symbol.upper()}_GMT"
+        matches = [
+            name for name in os.listdir(bars_dir)
+            if name.upper().startswith(symbol_prefix) and name.upper().endswith(".CSV") and "_M" in name.upper()
+        ]
+        if matches:
+            matches.sort(key=lambda name: (0 if f"_{timeframe.upper()}.CSV" in name.upper() else 1, name.upper()))
+            return os.path.join(bars_dir, matches[0])
+
+    raise FileNotFoundError(
+        f"Expected bar file '{filename}' not found in '{bars_dir}'"
+    )
+
+
+def _load_bar_points(path: str,
+                     min_ts: Optional[int] = None,
+                     max_ts: Optional[int] = None) -> List[Dict]:
+    points: List[Dict] = []
+    processed = 0
+    skipped_outside_window = 0
+
+    with open(path, "r", encoding="utf-8") as fh:
+        reader = csv.reader(fh)
+        for row_num, row in enumerate(reader):
+            processed += 1
+            if len(row) < 5:
+                continue
+            try:
+                if row_num == 0 and row[0].strip().lower() in ("unix_ts", "time", "date", "datetime"):
+                    continue
+
+                ts = int(float(row[0]))
+                if min_ts is not None and ts < min_ts:
+                    skipped_outside_window += 1
+                    continue
+                if max_ts is not None and ts > max_ts:
+                    break
+
+                close_price = float(row[4])
+                points.append({"ts": ts, "bid": close_price, "ask": close_price})
+            except (ValueError, IndexError):
+                continue
+
+    print(
+        f"  Bar load complete: {processed:,} rows scanned, {len(points):,} kept"
+        f" ({skipped_outside_window:,} before window)",
+        flush=True,
+    )
+    return points
+
+
 def _parse_strategy_arg(raw: str, default_broker_gmt: int) -> Dict[str, object]:
     parts = [p.strip() for p in raw.split("|")]
     if len(parts) < 2:
@@ -293,7 +359,9 @@ def _build_source_review(path: str,
                          symbol: str,
                          broker_gmt: int,
                          tick_gmt: int,
+                         bar_gmt: int,
                          ticks_dir: str,
+                         bars_dir: str,
                          start_date: str,
                          end_date: str,
                          magic_filter: str,
@@ -314,29 +382,52 @@ def _build_source_review(path: str,
     if window_min > window_max:
         raise ValueError("No trade history remains after applying the chosen start/end date filters")
 
-    ticks: List[Dict] = []
+    bar_points: List[Dict] = []
+    tick_points: List[Dict] = []
+    bar_file = ""
     tick_file = ""
+    filtered_trades = _simple_window_filter(trades, window_min, window_max)
+    curve_source = "trade-event"
+    curve_note = "No matching bar or tick file was available, so the chart falls back to realised trade-event steps."
+
+    if (bars_dir or "").strip():
+        try:
+            bar_file = _resolve_bar_file(bars_dir, symbol, bar_gmt)
+            bar_points = _load_bar_points(bar_file, window_min, window_max)
+            if bar_points:
+                filtered_trades = _STAGE1.clip_trades_to_window(trades, window_min, window_max, bar_points)
+                curve_source = "bar"
+                curve_note = f"Equity mapping used {len(bar_points):,} M5 bar points from the local archive."
+        except Exception as exc:
+            print(f"  WARNING: bar load skipped for {label}: {exc}")
+            bar_points = []
+
     if (ticks_dir or "").strip():
         try:
             tick_file = _STAGE1.resolve_tick_file(ticks_dir, symbol, tick_gmt)
-            ticks = _STAGE1.load_ticks(tick_file, tick_gmt, window_min, window_max)
+            tick_points = _STAGE1.load_ticks(tick_file, tick_gmt, window_min, window_max)
+            if tick_points:
+                filtered_trades = _STAGE1.clip_trades_to_window(trades, window_min, window_max, tick_points)
+                curve_source = "bar+tick" if bar_points else "tick"
+                if bar_points:
+                    curve_note = (
+                        f"Bar data was loaded first ({len(bar_points):,} bar points), and tick data was then applied "
+                        f"for the final higher-resolution mark-to-market curve from {len(tick_points):,} ticks."
+                    )
+                else:
+                    curve_note = f"Balance/equity view uses a downsampled intraday mark-to-market curve from {len(tick_points):,} ticks."
         except Exception as exc:
             print(f"  WARNING: tick load skipped for {label}: {exc}")
-            ticks = []
-
-    if ticks:
-        filtered_trades = _STAGE1.clip_trades_to_window(trades, window_min, window_max, ticks)
-        curve_note = f"Balance/equity view uses a downsampled intraday mark-to-market curve from {len(ticks):,} ticks."
-    else:
-        filtered_trades = _simple_window_filter(trades, window_min, window_max)
-        curve_note = "No matching tick file was available, so the chart falls back to realised trade-event steps."
+            tick_points = []
 
     if not filtered_trades:
         raise ValueError(f"No trades remain for {label} after the selected filters")
 
     scaled_trades = _STAGE1._scale_trades(filtered_trades, scale)
-    if ticks:
-        curves = _STAGE1.build_equity_curve_from_ticks(scaled_trades, ticks)
+    if tick_points:
+        curves = _STAGE1.build_equity_curve_from_ticks(scaled_trades, tick_points)
+    elif bar_points:
+        curves = _STAGE1.build_equity_curve_from_ticks(scaled_trades, bar_points, sample_every=1)
     else:
         curves = _STAGE1.build_equity_curve_from_trade_events(scaled_trades)
 
@@ -362,7 +453,7 @@ def _build_source_review(path: str,
             base_lot,
             scale,
             curves,
-            "ticks" if ticks else "trade-event",
+            curve_source,
             account_size,
             {},
         )
@@ -380,6 +471,8 @@ def _build_source_review(path: str,
         "window_start": datetime.fromtimestamp(window_min, tz=display_tz).strftime("%Y-%m-%d %H:%M"),
         "window_end": datetime.fromtimestamp(window_max, tz=display_tz).strftime("%Y-%m-%d %H:%M"),
         "curve_note": curve_note,
+        "curve_source": curve_source,
+        "bar_file": bar_file,
         "tick_file": tick_file,
         "trades": scaled_trades,
         "stats": stats,
@@ -402,6 +495,7 @@ def write_review_report(review: Dict,
         ("Source", review["label"]),
         ("Format", review["source_format"]),
         ("Symbol", review["symbol"]),
+        ("Equity Mapping", review.get("curve_source", "trade-event")),
         ("Trade Count", str(stats["count"])),
         ("Wins / Losses", f"{stats['wins']} / {stats['losses']}"),
         ("Win Rate", f"{stats['win_rate']:.1f}%"),
@@ -522,9 +616,11 @@ def main() -> int:
     ap.add_argument("--symbol", required=True, metavar="SYMBOL", help="Primary symbol filter, e.g. EURUSD or USDJPY.")
     ap.add_argument("--magic", default="", metavar="N", help="Optional magic filter for the primary statement.")
     ap.add_argument("--scale", type=float, default=1.0, metavar="X", help="Optional scale factor for the primary review.")
-    ap.add_argument("--ticks-dir", default="", metavar="PATH", help="Optional tick folder used for mark-to-market equity.")
+    ap.add_argument("--ticks-dir", default="", metavar="PATH", help="Optional tick folder used for higher-resolution mark-to-market equity.")
+    ap.add_argument("--bars-dir", default="", metavar="PATH", help="Optional bar folder used for bar-based equity mapping before tick refinement.")
     ap.add_argument("--broker-gmt", type=int, default=2, metavar="N", help="Broker timezone offset for the primary statement.")
     ap.add_argument("--tick-gmt", type=int, default=2, metavar="N", help="Tick timezone offset.")
+    ap.add_argument("--bar-gmt", type=int, default=2, metavar="N", help="Bar timezone offset.")
     ap.add_argument("--start-date", default="", metavar="YYYY.MM.DD", help="Optional start date filter.")
     ap.add_argument("--end-date", default="", metavar="YYYY.MM.DD", help="Optional end date filter.")
     ap.add_argument("--out-dir", default=".", metavar="PATH", help="Output directory.")
@@ -549,7 +645,9 @@ def main() -> int:
             symbol=args.symbol,
             broker_gmt=args.broker_gmt,
             tick_gmt=args.tick_gmt,
+            bar_gmt=args.bar_gmt,
             ticks_dir=args.ticks_dir,
+            bars_dir=args.bars_dir,
             start_date=args.start_date,
             end_date=args.end_date,
             magic_filter=primary_magic,
@@ -558,6 +656,7 @@ def main() -> int:
             account_size=args.account_size,
         )
         print(f"  {review['label']}: {len(review['trades'])} trades loaded ({review['source_format']})")
+        print(f"  Equity mapping: {review['curve_source']}")
         print(f"  Net P&L: ${review['stats']['net']:,.2f} | Max DD: ${review['max_dd']:,.2f}")
 
         portfolio_note = ""
@@ -594,7 +693,9 @@ def main() -> int:
                     symbol=str(cfg["symbol"]),
                     broker_gmt=int(cfg["broker_gmt"]),
                     tick_gmt=args.tick_gmt,
+                    bar_gmt=args.bar_gmt,
                     ticks_dir=args.ticks_dir,
+                    bars_dir=args.bars_dir,
                     start_date=args.start_date,
                     end_date=args.end_date,
                     magic_filter=str(cfg["magic"]),

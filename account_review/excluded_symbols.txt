@@ -1,0 +1,6 @@
+# Exclude one symbol per line from Stage 1 and later stages.
+# Example:
+# EURUSD
+# GBPUSD
+EURJPY
+GBPUSD

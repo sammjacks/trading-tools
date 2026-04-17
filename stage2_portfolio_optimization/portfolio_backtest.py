@@ -131,24 +131,32 @@ def _extract_rows(html_text: str) -> List[List[str]]:
 # ────────────────────────────────────────────────────────────────────────────
 def _detect_format(html_text: str, rows: List[List[str]]) -> str:
     """Return one of: 'mt5_tester', 'mt4_tester', 'mt4_live'."""
-    if re.search(r">\s*Deals\s*<", html_text) and "Direction" in html_text:
+    if re.search(r">\s*Deals\s*<", html_text, re.IGNORECASE) and re.search(r"Direction", html_text, re.IGNORECASE):
         for row in rows:
             if len(row) >= 13 and row[4].strip().lower() in ("in", "out"):
                 return "mt5_tester"
 
     has_tester_open = any(
-        len(row) == 9 and row[2].strip().lower() in ("buy", "sell")
+        len(row) >= 6 and row[2].strip().lower() in ("buy", "sell")
         for row in rows
     )
     has_tester_close = any(
-        len(row) == 10 and row[2].strip().lower() == "close"
+        len(row) >= 6 and _is_mt4_tester_close_type(row[2])
         for row in rows
     )
-    if has_tester_open and has_tester_close:
+    has_tester_header = any(
+        {"#", "time", "type", "order", "size", "price", "profit", "balance"}.issubset(
+            {_normalize_header_name(c) for c in row if c.strip()}
+        )
+        for row in rows
+    )
+    if "strategy tester report" in html_text.lower() and (has_tester_header or has_tester_open or has_tester_close):
+        return "mt4_tester"
+    if has_tester_header or (has_tester_open and has_tester_close):
         return "mt4_tester"
 
     has_live_trade = any(
-        len(row) == 14 and row[2].strip().lower() in ("buy", "sell")
+        len(row) >= 13 and row[2].strip().lower() in ("buy", "sell")
         for row in rows
     )
     if has_live_trade:
@@ -176,6 +184,29 @@ def _parse_dt(s: str, offset: timezone) -> int:
 def _parse_num(s: str) -> float:
     """Parse a number that may use space as thousands separator."""
     return float(s.replace(" ", "").replace(",", ""))
+
+
+def _normalize_header_name(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip().lower()).rstrip(":")
+
+
+def _is_mt4_tester_close_type(value: str) -> bool:
+    token = re.sub(r"\s+", " ", (value or "").strip().lower())
+    if not token:
+        return False
+    if token in (
+        "close",
+        "t/p",
+        "s/l",
+        "tp",
+        "sl",
+        "stop loss",
+        "take profit",
+        "close at stop",
+        "close at limit",
+    ):
+        return True
+    return token.startswith("close")
 
 
 def _parse_mt4_live(rows, offset, symbol_filter):
@@ -208,40 +239,50 @@ def _parse_mt4_live(rows, offset, symbol_filter):
 def _parse_mt4_tester(rows, offset):
     opens: Dict[int, Dict] = {}
     trades = []
+    ignored_types = {"modify", "delete", "balance", "credit"}
+
     for row in rows:
-        if len(row) == 9:
-            ttype = row[2].strip().lower()
-            if ttype in ("buy", "sell"):
-                try:
-                    order = int(row[3])
-                    opens[order] = {
-                        "type": ttype,
-                        "ts": _parse_dt(row[1], offset),
-                        "price": float(row[5]),
-                        "lots": float(row[4]),
-                    }
-                except (ValueError, IndexError):
-                    pass
+        if len(row) < 6:
             continue
-        if len(row) == 10 and row[2].strip().lower() == "close":
+
+        ttype = row[2].strip().lower()
+        if ttype in ("buy", "sell"):
             try:
-                order = int(row[3])
-                if order not in opens:
-                    continue
-                o = opens.pop(order)
-                trades.append({
-                    "type": o["type"],
-                    "ts": o["ts"],
-                    "close_ts": _parse_dt(row[1], offset),
-                    "price": o["price"],
-                    "close_price": float(row[5]),
-                    "lots": o["lots"],
-                    "profit": _parse_num(row[8]),
-                    "commission": 0.0,
-                    "swap": 0.0,
-                })
+                order = int(float(row[3]))
+                opens[order] = {
+                    "type": ttype,
+                    "ts": _parse_dt(row[1], offset),
+                    "price": _parse_num(row[5]),
+                    "lots": _parse_num(row[4]),
+                }
             except (ValueError, IndexError):
+                pass
+            continue
+
+        if ttype in ignored_types or not _is_mt4_tester_close_type(ttype):
+            continue
+
+        try:
+            order = int(float(row[3]))
+            if order not in opens:
                 continue
+            if len(row) <= 8 or not row[8].strip():
+                continue
+
+            o = opens.pop(order)
+            trades.append({
+                "type": o["type"],
+                "ts": o["ts"],
+                "close_ts": _parse_dt(row[1], offset),
+                "price": o["price"],
+                "close_price": _parse_num(row[5]),
+                "lots": o["lots"],
+                "profit": _parse_num(row[8]),
+                "commission": 0.0,
+                "swap": 0.0,
+            })
+        except (ValueError, IndexError):
+            continue
     return trades
 
 
@@ -363,6 +404,64 @@ def load_bars(path: str) -> List[Dict]:
     return bars
 
 
+def load_ticks(path: str, tick_gmt: int,
+               min_ts: Optional[int] = None,
+               max_ts: Optional[int] = None,
+               progress_every: int = 1_000_000) -> List[Dict]:
+    """Load ticks from CSV. Expected layout: timestamp,bid,ask in first 3 cols."""
+    ticks: List[Dict] = []
+    offset = timezone(timedelta(hours=tick_gmt))
+    processed = 0
+    skipped_outside_window = 0
+
+    with open(path, "r", encoding="utf-8") as fh:
+        reader = csv.reader(fh)
+        for row_num, row in enumerate(reader):
+            processed += 1
+            if progress_every > 0 and processed % progress_every == 0:
+                print(f"  Tick load progress: {processed:,} rows scanned, {len(ticks):,} kept", flush=True)
+
+            if len(row) < 3:
+                continue
+            try:
+                if row_num == 0 and row[0].lower() in ("time", "date", "datetime"):
+                    continue
+
+                ts_str = row[0].strip()
+                for fmt in ("%d.%m.%Y %H:%M:%S.%f", "%d.%m.%Y %H:%M:%S",
+                            "%Y-%m-%d %H:%M:%S", "%Y.%m.%d %H:%M:%S"):
+                    try:
+                        dt = datetime.strptime(ts_str, fmt)
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    continue
+
+                ts = int(dt.replace(tzinfo=offset).timestamp())
+                if min_ts is not None and ts < min_ts:
+                    skipped_outside_window += 1
+                    continue
+                if max_ts is not None and ts > max_ts:
+                    break
+
+                bid = float(row[1])
+                ask = float(row[2])
+                ticks.append({"ts": ts, "bid": bid, "ask": ask})
+            except (ValueError, IndexError):
+                continue
+
+    if ticks and any(ticks[i]["ts"] > ticks[i + 1]["ts"] for i in range(min(len(ticks) - 1, 1000))):
+        ticks.sort(key=lambda t: t["ts"])
+
+    print(
+        f"  Tick load complete: {processed:,} rows scanned, {len(ticks):,} kept"
+        f" ({skipped_outside_window:,} before window)",
+        flush=True,
+    )
+    return ticks
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Equity curve
 # ────────────────────────────────────────────────────────────────────────────
@@ -419,6 +518,65 @@ def build_equity_curve(trades: List[Dict], bars: List[Dict],
     while open_idx < len(trades_sorted):
         active.append(trades_sorted[open_idx])
         open_idx += 1
+    for t in active:
+        realised += t["profit"] + t["commission"] + t["swap"]
+
+    if trades_sorted:
+        final_ts = max(
+            curves[-1]["ts"] if curves else 0,
+            trades_sorted[-1]["close_ts"],
+        )
+        if curves and curves[-1]["bal"] != round(realised, 2):
+            curves.append({
+                "ts": final_ts,
+                "bal": round(realised, 2),
+                "eq": round(realised, 2),
+            })
+
+    return curves
+
+
+def build_equity_curve_from_ticks(trades: List[Dict], ticks: List[Dict],
+                                  sample_every: int = 100) -> List[Dict]:
+    """Build equity curve from tick data by computing mark-to-market P&L."""
+    curves: List[Dict] = []
+    realised = 0.0
+
+    trades_sorted = sorted(trades, key=lambda t: t["ts"])
+    tick_idx = 0
+    active: List[Dict] = []
+
+    for ti in range(0, len(ticks), sample_every):
+        tick = ticks[ti]
+        tick_ts = tick["ts"]
+        mid = (tick["bid"] + tick["ask"]) / 2.0
+
+        while tick_idx < len(trades_sorted) and trades_sorted[tick_idx]["ts"] <= tick_ts:
+            active.append(trades_sorted[tick_idx])
+            tick_idx += 1
+
+        still: List[Dict] = []
+        for t in active:
+            if t["close_ts"] <= tick_ts:
+                realised += t["profit"] + t["commission"] + t["swap"]
+            else:
+                still.append(t)
+        active = still
+
+        unreal = 0.0
+        for t in active:
+            ps = _pip_size(t["price"])
+            unreal += _trade_mtm(t["type"], t["price"], mid, t["lots"], ps)
+
+        curves.append({
+            "ts": tick_ts,
+            "bal": round(realised, 2),
+            "eq": round(realised + unreal, 2),
+        })
+
+    while tick_idx < len(trades_sorted):
+        active.append(trades_sorted[tick_idx])
+        tick_idx += 1
     for t in active:
         realised += t["profit"] + t["commission"] + t["swap"]
 
@@ -608,15 +766,15 @@ COMBINED_COLOR = "#111111"
 
 def parse_strategy_arg(s: str) -> Dict:
     parts = [p.strip() for p in s.split("|")]
-    if len(parts) < 3:
+    if len(parts) < 2:
         raise ValueError(
-            f"--strategy needs at least SYMBOL|BACKTEST|BARS (got: {s!r})"
+            f"--strategy needs at least SYMBOL|BACKTEST (got: {s!r})"
         )
     symbol = parts[0]
     return {
         "symbol": symbol,
         "bt_path": parts[1],
-        "bars_path": parts[2],
+        "bars_path": parts[2] if len(parts) >= 3 else "",
         "scale": float(parts[3]) if len(parts) >= 4 and parts[3] else 1.0,
         "broker_gmt": int(parts[4]) if len(parts) >= 5 and parts[4] else 2,
         # 6th field is optional:
@@ -628,10 +786,10 @@ def parse_strategy_arg(s: str) -> Dict:
     }
 
 
-def load_strategy(cfg: Dict, months_override: Optional[float] = None) -> Dict:
+def load_strategy(cfg: Dict, months_override: Optional[float] = None,
+                  curve_source: str = "bars", tick_gmt: int = 2) -> Dict:
     print(f"\nLoading {cfg['symbol']} (scale={cfg['scale']:.2f}x)…")
     print(f"  Backtest: {cfg['bt_path']}")
-    print(f"  Bars:     {cfg['bars_path']}")
 
     if not os.path.exists(cfg["bt_path"]):
         # Be helpful about the common .htm <-> .html mixup — try the
@@ -649,8 +807,6 @@ def load_strategy(cfg: Dict, months_override: Optional[float] = None) -> Dict:
             cfg["bt_path"] = alt
         else:
             raise FileNotFoundError(f"Backtest file not found: {cfg['bt_path']}")
-    if not os.path.exists(cfg["bars_path"]):
-        raise FileNotFoundError(f"Bars file not found: {cfg['bars_path']}")
 
     trades, fmt = parse_backtest(cfg["bt_path"], cfg["broker_gmt"],
                                   cfg["symbol_filter"])
@@ -661,8 +817,6 @@ def load_strategy(cfg: Dict, months_override: Optional[float] = None) -> Dict:
             f"or file format."
         )
 
-    # Apply the backtest-months window BEFORE any downstream calculation
-    # so every metric (net, DD, curve) reflects only the recent window.
     total_trades_before_filter = len(trades)
     if months_override is not None and months_override > 0:
         trades = filter_trades_to_recent_months(trades, months_override)
@@ -678,12 +832,6 @@ def load_strategy(cfg: Dict, months_override: Optional[float] = None) -> Dict:
                 f"that window."
             )
 
-    # Capture the base lot size as the MODE of all trade lot sizes,
-    # not the first trade. Some backtests have anomalous first trades
-    # (e.g. leftover positions from EA init, or larger opening sizes
-    # on the very first basket) that don't represent the strategy's
-    # typical per-trade size. The mode across all trades is the
-    # robust answer that matches what the user sees in the EA config.
     from collections import Counter
     lot_counter = Counter(round(t["lots"], 4) for t in trades)
     base_lot = lot_counter.most_common(1)[0][0]
@@ -696,11 +844,28 @@ def load_strategy(cfg: Dict, months_override: Optional[float] = None) -> Dict:
             t["swap"] *= scale
             t["lots"] *= scale
 
-    bars = load_bars(cfg["bars_path"])
-    if not bars:
-        raise ValueError(f"{cfg['symbol']}: no bars loaded from {cfg['bars_path']}")
+    if curve_source == "bars":
+        print(f"  Bars:     {cfg.get('bars_path', '')}")
+        if not cfg.get("bars_path") or not os.path.exists(cfg["bars_path"]):
+            raise FileNotFoundError(f"Bars file not found: {cfg.get('bars_path', '')}")
+        bars = load_bars(cfg["bars_path"])
+        if not bars:
+            raise ValueError(f"{cfg['symbol']}: no bars loaded from {cfg['bars_path']}")
+        curves = build_equity_curve(trades, bars)
+    elif curve_source == "ticks":
+        tick_path = cfg.get("tick_path", "")
+        print(f"  Ticks:    {tick_path}")
+        if not tick_path or not os.path.exists(tick_path):
+            raise FileNotFoundError(f"Tick file not found: {tick_path}")
+        min_ts = min(t["ts"] for t in trades)
+        max_ts = max(t["close_ts"] for t in trades)
+        ticks = load_ticks(tick_path, tick_gmt, min_ts=min_ts, max_ts=max_ts)
+        if not ticks:
+            raise ValueError(f"{cfg['symbol']}: no ticks loaded from {tick_path}")
+        curves = build_equity_curve_from_ticks(trades, ticks)
+    else:
+        raise ValueError(f"Unknown curve_source: {curve_source}")
 
-    curves = build_equity_curve(trades, bars)
     labels, bal, eq = curves_to_daily(curves)
 
     peak, low, max_dd = max_drawdown(eq)
@@ -708,7 +873,7 @@ def load_strategy(cfg: Dict, months_override: Optional[float] = None) -> Dict:
     months = months_between(labels)
     max_open = max_open_positions(trades)
 
-    print(f"  {len(trades)} trades  |  net P&L: ${net:,.2f}  |  "
+    print(f"  {curve_source}: {len(trades)} trades  |  net P&L: ${net:,.2f}  |  "
           f"peak: ${peak:,.2f}  |  max DD: ${max_dd:,.2f}  |  "
           f"max open: {max_open}  |  {months:.1f} months")
 
@@ -1743,6 +1908,14 @@ def main() -> int:
                     help="Output directory for the portfolio report.")
     ap.add_argument("--title", default="Portfolio Backtest",
                     help="Title for the HTML report.")
+    ap.add_argument("--ticks-dir", default="",
+                    help="Directory containing per-symbol tick CSV files (optional).")
+    ap.add_argument("--tick-suffix", default="_GMT+2_US-DST.csv",
+                    help="Suffix appended to each symbol to build tick filename.")
+    ap.add_argument("--tick-gmt", type=int, default=2,
+                    help="Timezone offset used to parse tick timestamps.")
+    ap.add_argument("--curve-sources", default="auto",
+                    help="Comma-separated sources to run: auto,bars,ticks. Default: auto")
     ap.add_argument("--account-size", type=float, default=10000.0,
                     metavar="AMOUNT",
                     help="Notional account size in $ used for risk metrics: "
@@ -1795,86 +1968,135 @@ def main() -> int:
 
     try:
         configs = [parse_strategy_arg(s) for s in args.strategy]
+        if args.ticks_dir:
+            for cfg in configs:
+                cfg["tick_path"] = os.path.join(args.ticks_dir, cfg["symbol"] + args.tick_suffix)
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
 
-    strategies = []
-    for cfg in configs:
-        try:
-            strategies.append(load_strategy(cfg, args.backtest_months))
-        except (FileNotFoundError, ValueError) as e:
-            print(f"\nERROR loading {cfg['symbol']}: {e}", file=sys.stderr)
+    requested_sources = [s.strip().lower() for s in (args.curve_sources or "auto").split(",") if s.strip()]
+    if not requested_sources:
+        requested_sources = ["auto"]
+
+    if "auto" in requested_sources:
+        sources_to_run: List[str] = []
+        has_bars = any((cfg.get("bars_path") or "").strip() and os.path.exists(cfg["bars_path"]) for cfg in configs)
+        has_ticks = bool(args.ticks_dir)
+        if has_bars:
+            sources_to_run.append("bars")
+        if has_ticks:
+            sources_to_run.append("ticks")
+        if not sources_to_run:
+            print("ERROR: no usable bars or ticks source was supplied.", file=sys.stderr)
             return 1
+    else:
+        valid_sources = {"bars", "ticks"}
+        invalid = [s for s in requested_sources if s not in valid_sources]
+        if invalid:
+            print(f"ERROR: invalid --curve-sources value(s): {', '.join(invalid)}. Use auto,bars,ticks", file=sys.stderr)
+            return 1
+        sources_to_run = []
+        for src in requested_sources:
+            if src not in sources_to_run:
+                sources_to_run.append(src)
 
-    print("\nCombining curves on unified daily timeline…")
-    combined = combine_curves(strategies)
+    if "ticks" in sources_to_run and not args.ticks_dir:
+        print("ERROR: --ticks-dir is required when ticks source is enabled.", file=sys.stderr)
+        return 1
 
-    stats_lines = build_stats_text(
-        strategies, combined,
-        args.account_size, args.dd_tolerance, args.backtest_months
-    )
-    for ln in stats_lines:
-        print(ln)
+    def run_source(source_name: str) -> None:
+        print(f"\n{'=' * 92}")
+        print(f"SOURCE RUN: {source_name.upper()}")
+        print(f"{'=' * 92}")
 
-    # Optimization: find subsets meeting the safety/monthly thresholds.
-    opt_results: List[Dict] = []
-    opt_total = 0
-    opt_lines: List[str] = []
-    top_lines: List[str] = []
-    top_portfolios: List[Dict] = []
-    if args.optimize:
-        print(f"\nRunning optimization search "
-              f"(subset size {args.min_strategies}-{args.max_strategies}, "
-              f"scale 1-{args.max_scale}x)…")
-        opt_results, opt_total = find_optimal_combinations(
-            strategies, args.backtest_months,
-            args.account_size, args.dd_tolerance,
-            args.min_safety_factor, args.min_monthly_pct,
-            args.min_strategies, args.max_strategies, args.max_scale,
+        strategies = []
+        for cfg in configs:
+            try:
+                strategies.append(load_strategy(cfg, args.backtest_months,
+                                                curve_source=source_name,
+                                                tick_gmt=args.tick_gmt))
+            except (FileNotFoundError, ValueError) as e:
+                print(f"\nERROR loading {cfg['symbol']} for {source_name}: {e}", file=sys.stderr)
+                raise
+
+        print("\nCombining curves on unified daily timeline…")
+        combined = combine_curves(strategies)
+
+        stats_lines = build_stats_text(
+            strategies, combined,
+            args.account_size, args.dd_tolerance, args.backtest_months
         )
-        opt_lines = build_optimization_text(
-            opt_results, opt_total,
-            args.min_safety_factor, args.min_monthly_pct,
-            args.min_strategies, args.max_strategies, args.max_scale,
-        )
-        for ln in opt_lines:
+        for ln in stats_lines:
             print(ln)
-        stats_lines.extend(opt_lines)
 
-        if opt_results and args.top_n > 0:
-            top_portfolios = select_diverse_top_n(opt_results, args.top_n)
-            top_lines = build_diverse_top_text(top_portfolios)
-            for ln in top_lines:
-                print(ln)
-            stats_lines.extend(top_lines)
-
-    out_path = os.path.join(args.out_dir, "portfolio_report.html")
-    write_portfolio_report(strategies, combined, stats_lines,
-                           out_path, args.title)
-    print(f"\n✓ Portfolio HTML report: {out_path}")
-
-    if not args.no_xlsx:
-        xlsx_path = os.path.join(args.out_dir, "portfolio_report.xlsx")
-        try:
-            write_portfolio_xlsx(
-                strategies, combined, xlsx_path, args.title,
-                args.account_size, args.dd_tolerance, args.backtest_months,
-                opt_results if args.optimize else None,
-                opt_total if args.optimize else 0,
+        opt_results: List[Dict] = []
+        opt_total = 0
+        if args.optimize:
+            print(f"\nRunning optimization search "
+                  f"(subset size {args.min_strategies}-{args.max_strategies}, "
+                  f"scale 1-{args.max_scale}x)…")
+            opt_results, opt_total = find_optimal_combinations(
+                strategies, args.backtest_months,
+                args.account_size, args.dd_tolerance,
                 args.min_safety_factor, args.min_monthly_pct,
+                args.min_strategies, args.max_strategies, args.max_scale,
             )
-            print(f"✓ Portfolio xlsx report: {xlsx_path}")
-        except ImportError:
-            print("⚠ xlsx output skipped — openpyxl not installed. "
-                  "Run: pip install openpyxl")
+            opt_lines = build_optimization_text(
+                opt_results, opt_total,
+                args.min_safety_factor, args.min_monthly_pct,
+                args.min_strategies, args.max_strategies, args.max_scale,
+            )
+            for ln in opt_lines:
+                print(ln)
+            stats_lines.extend(opt_lines)
 
-    if top_portfolios:
-        print(f"\nExporting top {len(top_portfolios)} diverse portfolios…")
-        export_top_portfolios(
-            top_portfolios, strategies, configs, args.out_dir,
-            args.account_size, args.dd_tolerance, args.backtest_months,
-        )
+            top_portfolios: List[Dict] = []
+            if opt_results and args.top_n > 0:
+                top_portfolios = select_diverse_top_n(opt_results, args.top_n)
+                top_lines = build_diverse_top_text(top_portfolios)
+                for ln in top_lines:
+                    print(ln)
+                stats_lines.extend(top_lines)
+        else:
+            top_portfolios = []
+
+        source_out_dir = args.out_dir if len(sources_to_run) == 1 else os.path.join(args.out_dir, source_name)
+        os.makedirs(source_out_dir, exist_ok=True)
+
+        report_title = args.title if len(sources_to_run) == 1 else f"{args.title} ({source_name})"
+        out_path = os.path.join(source_out_dir, "portfolio_report.html")
+        write_portfolio_report(strategies, combined, stats_lines,
+                               out_path, report_title)
+        print(f"\n✓ {source_name} HTML report: {out_path}")
+
+        if not args.no_xlsx:
+            xlsx_path = os.path.join(source_out_dir, "portfolio_report.xlsx")
+            try:
+                write_portfolio_xlsx(
+                    strategies, combined, xlsx_path, report_title,
+                    args.account_size, args.dd_tolerance, args.backtest_months,
+                    opt_results if args.optimize else None,
+                    opt_total if args.optimize else 0,
+                    args.min_safety_factor, args.min_monthly_pct,
+                )
+                print(f"✓ {source_name} xlsx report: {xlsx_path}")
+            except ImportError:
+                print("⚠ xlsx output skipped — openpyxl not installed. "
+                      "Run: pip install openpyxl")
+
+        if top_portfolios:
+            print(f"\nExporting top {len(top_portfolios)} diverse portfolios for {source_name}…")
+            export_top_portfolios(
+                top_portfolios, strategies, configs, source_out_dir,
+                args.account_size, args.dd_tolerance, args.backtest_months,
+            )
+
+    try:
+        for source_name in sources_to_run:
+            run_source(source_name)
+    except (FileNotFoundError, ValueError):
+        return 1
 
     return 0
 

@@ -65,6 +65,42 @@ def _dedupe_strategies_by_symbol(strategies: List) -> List:
     return sorted(best.values(), key=lambda s: (s.symbol or ""))
 
 
+def _load_excluded_symbols(path_text: str) -> set[str]:
+    path_str = (path_text or "").strip()
+    if not path_str:
+        return set()
+
+    path = Path(path_str).expanduser().resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Excluded symbols file not found: {path}")
+
+    excluded: set[str] = set()
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        excluded.add(_clean_compare_symbol(line).upper())
+    return excluded
+
+
+def _apply_excluded_symbols(strategies: List, excluded: set[str]) -> List:
+    if not excluded:
+        return strategies
+
+    kept = []
+    removed = []
+    for s in strategies:
+        symbol = _clean_compare_symbol(getattr(s, "symbol", "")).upper()
+        if symbol in excluded:
+            removed.append(symbol)
+            continue
+        kept.append(s)
+
+    if removed:
+        print(f"Excluded symbols from run: {', '.join(sorted(set(removed)))}")
+    return kept
+
+
 def _real_trade_window(stage1, statement_file: Path, broker_gmt: int, magic_filter: str) -> Tuple[List[dict], str, str, str]:
     trades, fmt = stage1.parse_statement(
         str(statement_file),
@@ -110,8 +146,9 @@ def _load_existing_real_period_backtests(run_dir: Path) -> List:
 
     found = []
     seen = set()
-    for report in sorted(list(backtests_dir.glob("*_MAGIC_*.htm")) + list(backtests_dir.glob("*_MAGIC_*.html"))):
-        symbol = re.split(r"_MAGIC_", report.stem, maxsplit=1)[0].strip()
+    for report in sorted(list(backtests_dir.glob("*.htm")) + list(backtests_dir.glob("*.html"))):
+        parts = [p for p in report.stem.split("_") if p]
+        symbol = parts[-2].strip() if len(parts) >= 2 else report.stem.strip()
         key = symbol.upper()
         if not symbol or key in seen:
             continue
@@ -193,7 +230,11 @@ def main() -> int:
     ap.add_argument("--resume-run-dir", default="", help="Existing run folder to resume from.")
     ap.add_argument("--resume-comparison-only", action="store_true", help="Reuse existing real-period backtests from --resume-run-dir and rerun only the comparison stage.")
     ap.add_argument("--comparison-only", action="store_true", help="Run only the real-period backtests and comparison, then stop before the 5-year stage.")
+    ap.add_argument("--real-period-backtests-only", action="store_true", help="Run only the same-period MT5 backtests from the real trade window and stop before comparison and portfolio stages.")
     ap.add_argument("--backtests-only", action="store_true", help="Only run the chart-detected MT5 backtests, save them neatly, and stop before comparison and portfolio stages.")
+    ap.add_argument("--excluded-symbols-file", default="", help="Optional text file with one symbol per line to skip from the run.")
+    ap.add_argument("--force-fixed-lot", action="store_true", help="Override detected EA inputs to use fixed lot sizing in the tester set files.")
+    ap.add_argument("--fixed-lot-value", type=float, default=0.01, help="Fixed lot size to use when --force-fixed-lot is enabled.")
     ap.add_argument("--preview-plan", action="store_true")
     ap.add_argument("--run-review-now", action="store_true")
     ap.add_argument("--run-portfolio-now", action="store_true")
@@ -289,6 +330,12 @@ def main() -> int:
         if not strategies:
             raise RuntimeError("No active MT5 chart strategies matched trades in the real statement.")
 
+    excluded_symbols = _load_excluded_symbols(args.excluded_symbols_file)
+    if excluded_symbols:
+        strategies = _apply_excluded_symbols(strategies, excluded_symbols)
+        if not strategies:
+            raise RuntimeError("All detected strategies were excluded by the excluded_symbols file.")
+
     terminal_exe = mt5._find_terminal_exe(mt5_terminal_dir, args.mt5_terminal_exe)
     expert_root = mt5._find_expert_root(mt5_terminal_dir)
     candidates = mt5._ea_candidates(expert_root)
@@ -344,6 +391,9 @@ def main() -> int:
             broker_login=args.broker_login,
             broker_password=args.broker_password,
             broker_server=args.broker_server,
+            report_prefix=(args.broker_server or args.account_label),
+            force_fixed_lot=args.force_fixed_lot,
+            fixed_lot_value=args.fixed_lot_value,
         )
 
         detected_csv = run_dir / "detected_strategies" / "detected_strategies.csv"
@@ -391,7 +441,15 @@ def main() -> int:
             broker_login=args.broker_login,
             broker_password=args.broker_password,
             broker_server=args.broker_server,
+            report_prefix=(args.broker_server or args.account_label),
+            force_fixed_lot=args.force_fixed_lot,
+            fixed_lot_value=args.fixed_lot_value,
         )
+
+    if args.real_period_backtests_only:
+        print(f"\nSame-period backtests-only mode complete.")
+        print(f"Run folder: {run_dir}")
+        return 0
 
     if statement_file is None or stage1_script is None:
         raise RuntimeError("A real statement file is required for the comparison stage.")
@@ -435,6 +493,9 @@ def main() -> int:
         broker_login=args.broker_login,
         broker_password=args.broker_password,
         broker_server=args.broker_server,
+        report_prefix=(args.broker_server or args.account_label),
+        force_fixed_lot=args.force_fixed_lot,
+        fixed_lot_value=args.fixed_lot_value,
     )
 
     detected_csv = run_dir / "detected_strategies" / "detected_strategies.csv"

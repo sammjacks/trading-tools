@@ -770,6 +770,27 @@ def _write_expert_set_file(path: Path, inputs: Dict[str, str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _apply_fixed_lot_overrides(inputs: Dict[str, str], fixed_lot_value: float) -> Dict[str, str]:
+    out = dict(inputs)
+    lot_text = f"{fixed_lot_value:.2f}"
+
+    for key in list(out.keys()):
+        low = key.lower()
+        if low in {"auto_risk", "autorisk"}:
+            out[key] = "false"
+        elif low in {"risklimit", "risk_limit"}:
+            out[key] = "0"
+        elif low in {"startlot", "fixedlot", "lotsize", "lot_size"}:
+            out[key] = lot_text
+
+    if "Auto_Risk" not in out and "autorisk" not in {k.lower() for k in out}:
+        out["Auto_Risk"] = "false"
+    if not any(k.lower() in {"startlot", "fixedlot", "lotsize", "lot_size"} for k in out):
+        out["StartLot"] = lot_text
+
+    return out
+
+
 def _assign_eas_to_strategies(
     strategies: List[StrategyAggregate],
     candidates: List[Path],
@@ -1320,6 +1341,9 @@ def run_mt5_backtests(
     broker_login: str = "",
     broker_password: str = "",
     broker_server: str = "",
+    report_prefix: str = "",
+    force_fixed_lot: bool = False,
+    fixed_lot_value: float = 0.01,
 ) -> None:
     expert_root = _find_expert_root(mt5_terminal_dir)
     tester_profile_dir = _find_tester_profile_dir(mt5_terminal_dir)
@@ -1347,7 +1371,16 @@ def run_mt5_backtests(
         expert_value = _ea_relative_to_expert_root(ea_path, expert_root)
         # Use the period detected from live logs; fall back to the global default.
         effective_period = s.period or period
-        report_stem = backtests_dir / f"{s.symbol}_MAGIC_{s.magic or 'NA'}"
+        report_name = "_".join(
+            part for part in [
+                _safe_name(report_prefix or broker_server or "Broker"),
+                _safe_name(ea_path.stem),
+                _safe_name(s.symbol),
+                _safe_name(effective_period),
+            ]
+            if part
+        )
+        report_stem = backtests_dir / report_name
         ini = inis_dir / f"tester_{i:02d}_{_safe_name(s.symbol)}_{s.magic or 'NA'}.ini"
         set_file = None
         set_file_name = ""
@@ -1356,6 +1389,8 @@ def run_mt5_backtests(
             effective_inputs["Order_Filling_Type"] = _normalize_order_filling_value(
                 effective_inputs["Order_Filling_Type"]
             )
+        if force_fixed_lot:
+            effective_inputs = _apply_fixed_lot_overrides(effective_inputs, fixed_lot_value)
 
         # Only override order filling for EAs that actually use that parameter.
         if force_order_filling_type.strip().upper() != "AUTO" and "Order_Filling_Type" in effective_inputs:
@@ -1519,7 +1554,7 @@ def run_mt5_backtests(
 
 
 def _native_report_has_trade_rows(report_path: Path) -> bool:
-    """Heuristic: confirm the MT5 HTML report includes actual deal rows, not just the summary."""
+    """Confirm the MT5 HTML report is a real tester report, even if it had no trades."""
     try:
         raw = report_path.read_bytes()
     except OSError:
@@ -1532,11 +1567,13 @@ def _native_report_has_trade_rows(report_path: Path) -> bool:
     else:
         text = raw.decode("utf-8", errors="ignore")
 
-    if "Deals" not in text or "Direction" not in text:
-        return False
-
-    timestamps = re.findall(r"\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2}", text)
-    return len(timestamps) >= 3
+    report_markers = (
+        "Strategy Tester Report",
+        "Balance graph",
+        "Total Net Profit",
+        "History Quality",
+    )
+    return any(marker in text for marker in report_markers)
 
 
 def _find_native_mt5_report(

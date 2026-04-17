@@ -18,10 +18,14 @@ REM Format: YYYY.MM.DD   Example: 2026.03.04
 set start_date=2026.03.29
 set end_date=
 
-REM --- Tick data for mark-to-market equity ---
+REM --- Bar / tick data for mark-to-market equity ---
+REM Leave either path blank to use only the other source.
+REM If both are set, the review uses bar mapping first and then tick refinement.
 set ticks_dir=D:\SEIF_system_new\Michel_Start
+set bar_dir=D:\SEIF_system_new\Michel_Start
 set broker_gmt=2
 set tick_gmt=2
+set bar_gmt=2
 
 REM --- Output ---
 set output_dir=.
@@ -144,7 +148,9 @@ if "%PYTHON_CMD%"=="" (
     exit /b 1
 )
 
-set CMD=%PYTHON_CMD% -u real_results_review.py --statement "%statement_file%" --symbol "%symbol%" --ticks-dir "%ticks_dir%" --broker-gmt %broker_gmt% --tick-gmt %tick_gmt% --out-dir "%output_dir%" --title "%title%" --portfolio-title "%portfolio_title%" --account-size %account_size% --dd-tolerance %dd_tolerance% --scale %scale%
+set CMD=%PYTHON_CMD% -u real_results_review.py --statement "%statement_file%" --symbol "%symbol%" --broker-gmt %broker_gmt% --tick-gmt %tick_gmt% --bar-gmt %bar_gmt% --out-dir "%output_dir%" --title "%title%" --portfolio-title "%portfolio_title%" --account-size %account_size% --dd-tolerance %dd_tolerance% --scale %scale%
+if not "%ticks_dir%"=="" set CMD=%CMD% --ticks-dir "%ticks_dir%"
+if not "%bar_dir%"=="" set CMD=%CMD% --bars-dir "%bar_dir%"
 if not "%magic_filter%"=="" set CMD=%CMD% --magic "%magic_filter%"
 if not "%start_date%"=="" set CMD=%CMD% --start-date "%start_date%"
 if not "%end_date%"=="" set CMD=%CMD% --end-date "%end_date%"
