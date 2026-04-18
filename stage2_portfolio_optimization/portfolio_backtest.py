@@ -758,10 +758,16 @@ def compute_risk_metrics(net: float, max_dd: float, months: float,
 # Strategy loading / combining / rendering
 # ────────────────────────────────────────────────────────────────────────────
 STRATEGY_COLORS = [
-    "#378ADD", "#E89611", "#2E9E5A", "#B83D8A",
-    "#7C4DFF", "#C94444", "#00897B", "#F4B400",
+    "#378ADD", "#E89611", "#2E9E5A", "#B83D8A", "#7C4DFF",
+    "#C94444", "#00897B", "#F4B400", "#5C6BC0", "#26A69A",
+    "#EF5350", "#8D6E63", "#AB47BC", "#66BB6A", "#FFA726",
 ]
 COMBINED_COLOR = "#111111"
+
+
+def _display_name_from_path(path: str, fallback: str) -> str:
+    name = os.path.basename(os.path.normpath(path or ""))
+    return name or fallback
 
 
 def parse_strategy_arg(s: str) -> Dict:
@@ -771,9 +777,12 @@ def parse_strategy_arg(s: str) -> Dict:
             f"--strategy needs at least SYMBOL|BACKTEST (got: {s!r})"
         )
     symbol = parts[0]
+    bt_path = parts[1]
+    display_name = _display_name_from_path(bt_path, symbol)
     return {
         "symbol": symbol,
-        "bt_path": parts[1],
+        "display_name": display_name,
+        "bt_path": bt_path,
         "bars_path": parts[2] if len(parts) >= 3 else "",
         "scale": float(parts[3]) if len(parts) >= 4 and parts[3] else 1.0,
         "broker_gmt": int(parts[4]) if len(parts) >= 5 and parts[4] else 2,
@@ -788,7 +797,9 @@ def parse_strategy_arg(s: str) -> Dict:
 
 def load_strategy(cfg: Dict, months_override: Optional[float] = None,
                   curve_source: str = "bars", tick_gmt: int = 2) -> Dict:
-    print(f"\nLoading {cfg['symbol']} (scale={cfg['scale']:.2f}x)…")
+    cfg["display_name"] = _display_name_from_path(cfg.get("bt_path", ""), cfg["symbol"])
+    label = cfg["display_name"]
+    print(f"\nLoading {label} (symbol={cfg['symbol']}, scale={cfg['scale']:.2f}x)…")
     print(f"  Backtest: {cfg['bt_path']}")
 
     if not os.path.exists(cfg["bt_path"]):
@@ -808,12 +819,15 @@ def load_strategy(cfg: Dict, months_override: Optional[float] = None,
         else:
             raise FileNotFoundError(f"Backtest file not found: {cfg['bt_path']}")
 
+    cfg["display_name"] = _display_name_from_path(cfg["bt_path"], cfg["symbol"])
+    label = cfg["display_name"]
+
     trades, fmt = parse_backtest(cfg["bt_path"], cfg["broker_gmt"],
                                   cfg["symbol_filter"])
     print(f"  Detected format: {fmt}")
     if not trades:
         raise ValueError(
-            f"{cfg['symbol']}: no trades parsed. Check --symbol filter "
+            f"{label}: no trades parsed. Check --symbol filter "
             f"or file format."
         )
 
@@ -827,7 +841,7 @@ def load_strategy(cfg: Dict, months_override: Optional[float] = None,
                   f"(dropped {dropped})")
         if not trades:
             raise ValueError(
-                f"{cfg['symbol']}: no trades in the most recent "
+                f"{label}: no trades in the most recent "
                 f"{months_override} months — the backtest may not span "
                 f"that window."
             )
@@ -850,7 +864,7 @@ def load_strategy(cfg: Dict, months_override: Optional[float] = None,
             raise FileNotFoundError(f"Bars file not found: {cfg.get('bars_path', '')}")
         bars = load_bars(cfg["bars_path"])
         if not bars:
-            raise ValueError(f"{cfg['symbol']}: no bars loaded from {cfg['bars_path']}")
+            raise ValueError(f"{label}: no bars loaded from {cfg['bars_path']}")
         curves = build_equity_curve(trades, bars)
     elif curve_source == "ticks":
         tick_path = cfg.get("tick_path", "")
@@ -861,7 +875,7 @@ def load_strategy(cfg: Dict, months_override: Optional[float] = None,
         max_ts = max(t["close_ts"] for t in trades)
         ticks = load_ticks(tick_path, tick_gmt, min_ts=min_ts, max_ts=max_ts)
         if not ticks:
-            raise ValueError(f"{cfg['symbol']}: no ticks loaded from {tick_path}")
+            raise ValueError(f"{label}: no ticks loaded from {tick_path}")
         curves = build_equity_curve_from_ticks(trades, ticks)
     else:
         raise ValueError(f"Unknown curve_source: {curve_source}")
@@ -879,6 +893,8 @@ def load_strategy(cfg: Dict, months_override: Optional[float] = None,
 
     return {
         "symbol": cfg["symbol"],
+        "display_name": label,
+        "strategy_id": os.path.normcase(os.path.abspath(cfg["bt_path"])),
         "scale": scale,
         "base_lot": base_lot,
         "lot_size": round(base_lot * scale, 4),
@@ -996,7 +1012,7 @@ def find_optimal_combinations(
         min_sf: float,
         min_monthly_pct: float,
         min_n: int = 1,
-        max_n: int = 3,
+        max_n: int = 15,
         max_scale: int = 5) -> Tuple[List[Dict], int]:
     """Enumerate every non-empty subset of strategies with every
     integer scale combination from 1x to max_scale, evaluate the
@@ -1026,14 +1042,14 @@ def find_optimal_combinations(
     # Print strategy-to-index mapping for diagnostics
     print(f"  Strategy index mapping:")
     for i, s in enumerate(strategies):
-        print(f"    [{i}] {s['symbol']}")
+        print(f"    [{i}] {s.get('display_name', s['symbol'])}")
 
     for k in range(lo, hi + 1):
         valid_subsets = 0
         for idx_tuple in iter_combinations(range(n), k):
             subset = [strategies[i] for i in idx_tuple]
-            symbols = [s["symbol"] for s in subset]
-            if len(set(symbols)) != len(symbols):
+            strategy_ids = [s.get("strategy_id", s["symbol"]) for s in subset]
+            if len(set(strategy_ids)) != len(strategy_ids):
                 continue
             subset_plans.append((k, idx_tuple, subset))
             valid_subsets += 1
@@ -1100,7 +1116,8 @@ def find_optimal_combinations(
                     and rm["monthly_pct"] >= min_monthly_pct):
                 candidate = {
                     "strategy_indices": list(idx_tuple),
-                    "symbols": [s["symbol"] for s in subset],
+                    "symbols": [s.get("display_name", s["symbol"]) for s in subset],
+                    "strategy_ids": [s.get("strategy_id", s["symbol"]) for s in subset],
                     "scales": list(scale_tuple),
                     "lot_sizes": [
                         round(subset[j]["base_lot"] * scale_tuple[j], 4)
@@ -1153,8 +1170,12 @@ def select_diverse_top_n(passing: List[Dict], n: int = 3) -> List[Dict]:
     if not passing:
         return []
 
-    # Safety filter: skip any result that somehow has duplicate symbols
-    clean = [r for r in passing if len(set(r["symbols"])) == len(r["symbols"])]
+    # Safety filter: skip any result that somehow has duplicate strategy files
+    clean = [
+        r for r in passing
+        if len(set(r.get("strategy_ids", r["symbols"])))
+        == len(r.get("strategy_ids", r["symbols"]))
+    ]
     if not clean:
         return []
 
@@ -1162,14 +1183,14 @@ def select_diverse_top_n(passing: List[Dict], n: int = 3) -> List[Dict]:
     remaining = list(clean[1:])
 
     while len(picked) < n and remaining:
-        used_symbols: set = set()
+        used_ids: set = set()
         for p in picked:
-            used_symbols.update(p["symbols"])
+            used_ids.update(p.get("strategy_ids", p["symbols"]))
 
         best_idx = 0
         best_score: Optional[Tuple] = None
         for i, r in enumerate(remaining):
-            overlap = len(set(r["symbols"]) & used_symbols)
+            overlap = len(set(r.get("strategy_ids", r["symbols"])) & used_ids)
             score = (-overlap, r["monthly_pct"], r["safety_factor"])
             if best_score is None or score > best_score:
                 best_score = score
@@ -1181,7 +1202,7 @@ def select_diverse_top_n(passing: List[Dict], n: int = 3) -> List[Dict]:
 
 def build_optimization_text(results: List[Dict], total_combos: int,
                               min_sf: float, min_monthly_pct: float,
-                              min_n: int = 1, max_n: int = 3,
+                              min_n: int = 1, max_n: int = 15,
                               max_scale: int = 5,
                               display_limit: int = 50) -> List[str]:
     lines = [""]
@@ -1239,7 +1260,7 @@ def build_optimization_text(results: List[Dict], total_combos: int,
 def build_diverse_top_text(top: List[Dict]) -> List[str]:
     lines = [""]
     lines.append("=" * 92)
-    lines.append("TOP DIVERSE PORTFOLIOS — greedy selection minimising symbol overlap")
+    lines.append("TOP DIVERSE PORTFOLIOS — greedy selection minimising strategy/file overlap")
     lines.append("=" * 92)
     lines.append("")
 
@@ -1274,20 +1295,20 @@ def build_stats_text(strategies: List[Dict], combined: Dict,
     lines.append("PORTFOLIO BACKTEST — Per-strategy + Combined")
     lines.append("=" * 92)
     lines.append("")
-    lines.append(f"  {'Strategy':<14} {'Scale':>7} {'Trades':>8} {'Max Open':>9} "
+    lines.append(f"  {'Strategy file':<32} {'Scale':>7} {'Trades':>8} {'Max Open':>9} "
                  f"{'Net P&L':>14} {'Peak':>14} {'Max DD':>14} {'Ret/DD':>10}")
-    lines.append(f"  {'-' * 90}")
+    lines.append(f"  {'-' * 118}")
 
     for s in strategies:
         ret_dd = s["net"] / s["max_dd"] if s["max_dd"] > 0 else float("inf")
         ret_dd_str = f"{ret_dd:.2f}" if ret_dd != float("inf") else "inf"
         lines.append(
-            f"  {s['symbol']:<14} {s['scale']:>6.2f}x {s['trades']:>8} {s['max_open_positions']:>9} "
+            f"  {s.get('display_name', s['symbol']):<32} {s['scale']:>6.2f}x {s['trades']:>8} {s['max_open_positions']:>9} "
             f"${s['net']:>12,.2f} ${s['peak']:>12,.2f} "
             f"${s['max_dd']:>12,.2f} {ret_dd_str:>10}"
         )
 
-    lines.append(f"  {'-' * 90}")
+    lines.append(f"  {'-' * 118}")
     sum_dd_naive = sum(s["max_dd"] for s in strategies)
     combined_ret_dd = combined["net"] / combined["max_dd"] if combined["max_dd"] > 0 else float("inf")
     combined_ret_dd_str = f"{combined_ret_dd:.2f}" if combined_ret_dd != float("inf") else "inf"
@@ -1328,10 +1349,10 @@ def build_stats_text(strategies: List[Dict], combined: Dict,
         lines.append(f"  Backtest months:    auto-computed per strategy "
                      f"from date range")
     lines.append("")
-    lines.append(f"  {'Strategy':<14} {'Months':>8} {'Lot':>8} {'Open Pos':>9} "
+    lines.append(f"  {'Strategy file':<32} {'Months':>8} {'Lot':>8} {'Open Pos':>9} "
                  f"{'Net P&L':>14} {'Max DD':>14} "
                  f"{'Safety Factor':>16} {'Monthly %':>12}")
-    lines.append(f"  {'-' * 90}")
+    lines.append(f"  {'-' * 118}")
 
     for s in strategies:
         months = backtest_months_override if backtest_months_override is not None else s["months"]
@@ -1342,12 +1363,12 @@ def build_stats_text(strategies: List[Dict], combined: Dict,
                   if rm["safety_factor"] != float("inf") else "inf")
         lot_str = f"{s['lot_size']:.2f}"
         lines.append(
-            f"  {s['symbol']:<14} {months:>7.1f}  {lot_str:>8} {s['max_open_positions']:>9} "
+            f"  {s.get('display_name', s['symbol']):<32} {months:>7.1f}  {lot_str:>8} {s['max_open_positions']:>9} "
             f"${s['net']:>12,.2f} ${s['max_dd']:>12,.2f} "
             f"{sf_str:>16} {rm['monthly_pct']:>11.2f}%"
         )
 
-    lines.append(f"  {'-' * 90}")
+    lines.append(f"  {'-' * 118}")
     p_months = (backtest_months_override
                 if backtest_months_override is not None else combined["months"])
     p_rm = compute_risk_metrics(
@@ -1377,6 +1398,7 @@ def write_portfolio_report(strategies, combined, stats_lines, out_path, title):
     datasets_bal = []
     for i, s in enumerate(strategies):
         color = STRATEGY_COLORS[i % len(STRATEGY_COLORS)]
+        base_label = s.get("display_name", s["symbol"])
         suffix = f" ({s['scale']:.2f}x)" if s["scale"] != 1.0 else ""
         by_eq = dict(zip(s["labels"], s["equity"]))
         by_bal = dict(zip(s["labels"], s["balance"]))
@@ -1391,9 +1413,9 @@ def write_portfolio_report(strategies, combined, stats_lines, out_path, title):
                 last_bal = by_bal[d]
             aligned_eq.append(last_eq if started else None)
             aligned_bal.append(last_bal if started else None)
-        datasets_eq.append({"label": s["symbol"] + suffix, "data": aligned_eq,
+        datasets_eq.append({"label": base_label + suffix, "data": aligned_eq,
                             "color": color, "width": 1.5})
-        datasets_bal.append({"label": s["symbol"] + suffix + " balance",
+        datasets_bal.append({"label": base_label + suffix + " balance",
                              "data": aligned_bal, "color": color, "width": 1.5})
 
     datasets_eq.insert(0, {"label": "PORTFOLIO equity", "data": combined["equity"],
@@ -1568,7 +1590,7 @@ def write_portfolio_xlsx(strategies, combined, out_path, title,
         months = (backtest_months_override if backtest_months_override is not None
                   else s["months"])
 
-        ws.cell(row=data_row, column=1, value=s["symbol"]).font = black_font
+        ws.cell(row=data_row, column=1, value=s.get("display_name", s["symbol"])).font = black_font
         ws.cell(row=data_row, column=2, value=s["trades"]).number_format = "#,##0"
         ws.cell(row=data_row, column=3, value=s["max_open_positions"]).number_format = "0"
         ws.cell(row=data_row, column=4, value=s["lot_size"]).number_format = "0.00"
@@ -1669,7 +1691,7 @@ def write_portfolio_xlsx(strategies, combined, out_path, title,
 
     # ── Column widths ────────────────────────────────────────────────
     widths = {
-        "A": 18, "B": 9, "C": 10, "D": 11, "E": 10,
+        "A": 38, "B": 9, "C": 10, "D": 11, "E": 10,
         "F": 15, "G": 15, "H": 15, "I": 16, "J": 13,
     }
     for col, w in widths.items():
@@ -1824,7 +1846,8 @@ def export_top_portfolios(top: List[Dict], strategies: List[Dict],
 
         print(f"\n  Top #{i}: {folder_name}")
         # Verify symbols match indices (catch any cached-vs-actual mismatch)
-        actual_syms = [strategies[idx]["symbol"] for idx in r["strategy_indices"]]
+        actual_syms = [strategies[idx].get("display_name", strategies[idx]["symbol"])
+                       for idx in r["strategy_indices"]]
         if actual_syms != r["symbols"]:
             print(f"    ⚠ Symbol mismatch! cached={r['symbols']}, "
                   f"actual={actual_syms}. Using actual.")
@@ -1949,10 +1972,10 @@ def main() -> int:
     ap.add_argument("--min-strategies", type=int, default=1, metavar="N",
                     help="Minimum number of strategies in each combination "
                          "tested by the optimizer (default 1).")
-    ap.add_argument("--max-strategies", type=int, default=3, metavar="N",
+    ap.add_argument("--max-strategies", type=int, default=15, metavar="N",
                     help="Maximum number of strategies in each combination "
-                         "tested by the optimizer (default 3). Keep this "
-                         "small — search space grows quickly.")
+                         "tested by the optimizer (default 15). Keep this "
+                         "reasonable — search space grows quickly.")
     ap.add_argument("--max-scale", type=int, default=5, metavar="N",
                     help="Maximum integer scale multiplier tried per "
                          "strategy in the optimization search (default 5). "
