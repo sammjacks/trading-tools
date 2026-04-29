@@ -828,6 +828,62 @@ def parse_statement(path: str, broker_gmt: int,
     return trades, fmt
 
 
+def _parse_summary_number(value: str) -> float:
+    text = (value or "").replace("\xa0", " ").strip()
+    m = re.search(r"-?[0-9][0-9\s,]*\.?[0-9]*", text)
+    return _parse_num(m.group(0)) if m else 0.0
+
+
+def _parse_amount_pct_pair(value: str) -> Tuple[float, float]:
+    text = (value or "").replace("\xa0", " ").strip()
+    m = re.search(r"([-0-9\s,]*\.?[0-9]+)\s*\(([-0-9\s,]*\.?[0-9]+)%\)", text)
+    if m:
+        return abs(_parse_num(m.group(1))), abs(_parse_num(m.group(2)))
+    m = re.search(r"([-0-9\s,]*\.?[0-9]+)%\s*\(([-0-9\s,]*\.?[0-9]+)\)", text)
+    if m:
+        return abs(_parse_num(m.group(2))), abs(_parse_num(m.group(1)))
+    return 0.0, 0.0
+
+
+def extract_backtest_report_summary(path: str) -> Dict:
+    """Extract key MT5/MT4 report summary metrics directly from HTML reports."""
+    try:
+        resolved = _resolve_statement_path(path)
+        if resolved.lower().endswith(".csv"):
+            return {}
+        html_text = read_text_file(resolved)
+    except OSError:
+        return {}
+
+    rows = _extract_rows(html_text)
+    summary: Dict[str, float] = {}
+
+    for row in rows:
+        for i in range(0, len(row) - 1, 2):
+            label = row[i].strip().rstrip(":").lower()
+            value = row[i + 1].strip()
+            if not label or not value:
+                continue
+            if label == "initial deposit":
+                summary["initial_deposit"] = _parse_summary_number(value)
+            elif label == "total net profit":
+                summary["report_net"] = _parse_summary_number(value)
+            elif label == "equity drawdown maximal":
+                amt, pct = _parse_amount_pct_pair(value)
+                if amt > 0:
+                    summary["report_max_dd"] = amt
+                if pct > 0:
+                    summary["report_max_dd_pct"] = pct
+            elif label == "equity drawdown relative":
+                amt, pct = _parse_amount_pct_pair(value)
+                if "report_max_dd" not in summary and amt > 0:
+                    summary["report_max_dd"] = amt
+                if "report_max_dd_pct" not in summary and pct > 0:
+                    summary["report_max_dd_pct"] = pct
+
+    return summary
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Tick CSV loading
 # ────────────────────────────────────────────────────────────────────────────
@@ -947,11 +1003,50 @@ def load_ticks(path: str, tick_gmt: int,
 # ────────────────────────────────────────────────────────────────────────────
 # Equity curve construction
 # ────────────────────────────────────────────────────────────────────────────
-def _calc_trade_pnl_from_prices(ttype: str, lots: float, open_price: float, close_price: float) -> float:
-    pip_size = 0.01 if open_price > 20 else 0.0001
-    pip_move = (close_price - open_price) / pip_size
+def _infer_profit_per_price(ttype: str,
+                           open_price: float,
+                           close_price: float,
+                           reported_profit: float) -> Optional[float]:
+    move = (close_price - open_price)
     if ttype == "sell":
-        pip_move = -pip_move
+        move = -move
+    if abs(move) <= 1e-12 or abs(reported_profit) <= 1e-12:
+        return None
+    return reported_profit / move
+
+
+def _default_profit_per_price(trades: List[Dict]) -> Optional[float]:
+    vals: List[float] = []
+    for t in trades:
+        coeff = _infer_profit_per_price(
+            str(t.get("type", "buy")),
+            float(t.get("price", 0.0)),
+            float(t.get("close_price", 0.0)),
+            float(t.get("profit", 0.0)),
+        )
+        if coeff is not None and coeff > 0:
+            vals.append(coeff)
+    if not vals:
+        return None
+    vals.sort()
+    mid = len(vals) // 2
+    if len(vals) % 2 == 1:
+        return vals[mid]
+    return (vals[mid - 1] + vals[mid]) / 2.0
+
+
+def _calc_trade_pnl_from_prices(ttype: str,
+                                lots: float,
+                                open_price: float,
+                                close_price: float,
+                                profit_per_price: Optional[float] = None) -> float:
+    move = (close_price - open_price)
+    if ttype == "sell":
+        move = -move
+    if profit_per_price is not None:
+        return move * profit_per_price
+    pip_size = 0.01 if open_price > 20 else 0.0001
+    pip_move = move / pip_size
     return pip_move * lots * 10.0
 
 
@@ -986,6 +1081,7 @@ def clip_trades_to_window(trades: List[Dict],
         return [dict(t) for t in trades]
 
     clipped: List[Dict] = []
+    default_profit_per_price = _default_profit_per_price(trades)
     for t in trades:
         if start_ts is not None and t["close_ts"] < start_ts:
             continue
@@ -1013,11 +1109,18 @@ def clip_trades_to_window(trades: List[Dict],
             continue
 
         if adjusted:
+            profit_per_price = _infer_profit_per_price(
+                str(t.get("type", "buy")),
+                float(t.get("price", 0.0)),
+                float(t.get("close_price", 0.0)),
+                float(t.get("profit", 0.0)),
+            )
             row["profit"] = _calc_trade_pnl_from_prices(
                 str(row.get("type", "buy")),
                 float(row.get("lots", 0.0)),
                 float(row.get("price", 0.0)),
                 float(row.get("close_price", 0.0)),
+                profit_per_price=(profit_per_price if profit_per_price is not None else default_profit_per_price),
             )
             row["commission"] = 0.0
             row["swap"] = 0.0
@@ -1052,7 +1155,7 @@ def build_equity_curve_from_trade_events(trades: List[Dict]) -> List[Dict]:
 
 def build_equity_curve_from_ticks(trades: List[Dict], ticks: List[Dict],
                                     sample_every: int = 100) -> List[Dict]:
-    """Build mark-to-market equity from ticks, with a realised fallback if ticks are unavailable."""
+    """Build mark-to-market equity from ticks/bars, with a realised fallback if data is unavailable."""
     if not trades:
         return []
     if not ticks:
@@ -1060,13 +1163,20 @@ def build_equity_curve_from_ticks(trades: List[Dict], ticks: List[Dict],
 
     curves: List[Dict] = []
     realised = 0.0
+    default_profit_per_price = _default_profit_per_price(trades)
 
     trades_sorted = sorted(trades, key=lambda t: t["ts"])
     tick_idx = 0
     active: List[Dict] = []
 
-    # Sample every Nth tick
-    for ti in range(0, len(ticks), sample_every):
+    sample_step = max(1, int(sample_every or 1))
+    preview = ticks[: min(len(ticks), 1000)]
+    is_bar_like = bool(preview) and all(abs(float(t.get("ask", 0.0)) - float(t.get("bid", 0.0))) < 1e-12 for t in preview)
+    if is_bar_like:
+        sample_step = 1
+
+    # Sample every Nth point for real tick files, but use every bar point.
+    for ti in range(0, len(ticks), sample_step):
         tick = ticks[ti]
         tick_ts = tick["ts"]
         mid = (tick["bid"] + tick["ask"]) / 2.0
@@ -1088,11 +1198,19 @@ def build_equity_curve_from_ticks(trades: List[Dict], ticks: List[Dict],
         # Compute unrealised P&L from open positions
         unreal = 0.0
         for t in active:
-            pip_size = 0.01 if t["price"] > 20 else 0.0001
-            pip_move = (mid - t["price"]) / pip_size
-            if t["type"] == "sell":
-                pip_move = -pip_move
-            unreal += pip_move * t["lots"] * 10.0
+            profit_per_price = _infer_profit_per_price(
+                str(t.get("type", "buy")),
+                float(t.get("price", 0.0)),
+                float(t.get("close_price", t.get("price", 0.0))),
+                float(t.get("profit", 0.0)),
+            )
+            unreal += _calc_trade_pnl_from_prices(
+                str(t.get("type", "buy")),
+                float(t.get("lots", 0.0)),
+                float(t.get("price", 0.0)),
+                float(mid),
+                profit_per_price=(profit_per_price if profit_per_price is not None else default_profit_per_price),
+            )
 
         curves.append({
             "ts": tick_ts,
@@ -1347,7 +1465,14 @@ def score_metric(real: float, backtest: float) -> float:
 def compute_comparison(real_stats: Dict, backtest_stats: Dict,
                         real_trades: List[Dict], backtest_trades: List[Dict],
                         real_labels: List[str], real_eq: List[float],
-                        backtest_labels: List[str], backtest_eq: List[float]) -> Dict:
+                        backtest_labels: List[str], backtest_eq: List[float],
+                        real_curve_dd: Optional[float] = None,
+                        backtest_curve_dd: Optional[float] = None,
+                        real_daily_dd: Optional[float] = None,
+                        backtest_daily_dd: Optional[float] = None,
+                        real_full_stats: Optional[Dict] = None,
+                        backtest_full_stats: Optional[Dict] = None,
+                        backtest_report_summary: Optional[Dict] = None) -> Dict:
     """Compute all comparison scores and aggregate into overall score."""
     scores = {}
 
@@ -1372,12 +1497,13 @@ def compute_comparison(real_stats: Dict, backtest_stats: Dict,
     else:
         scores["profit_factor"] = score_metric(real_pf, backtest_pf)
 
-    real_ret_dd = real_stats["net"] / max_drawdown(real_eq) if max_drawdown(real_eq) > 0 else 0.0
-    backtest_ret_dd = backtest_stats["net"] / max_drawdown(backtest_eq) if max_drawdown(backtest_eq) > 0 else 0.0
+    real_max_dd = real_curve_dd if real_curve_dd is not None else max_drawdown(real_eq)
+    backtest_max_dd = backtest_curve_dd if backtest_curve_dd is not None else max_drawdown(backtest_eq)
+    real_daily_dd = real_daily_dd if real_daily_dd is not None else max_drawdown(real_eq)
+    backtest_daily_dd = backtest_daily_dd if backtest_daily_dd is not None else max_drawdown(backtest_eq)
+    real_ret_dd = real_stats["net"] / real_max_dd if real_max_dd > 0 else 0.0
+    backtest_ret_dd = backtest_stats["net"] / backtest_max_dd if backtest_max_dd > 0 else 0.0
     scores["return_dd"] = score_metric(real_ret_dd, backtest_ret_dd)
-
-    real_max_dd = max_drawdown(real_eq)
-    backtest_max_dd = max_drawdown(backtest_eq)
     scores["max_dd"] = score_metric(real_max_dd, backtest_max_dd)
 
     scores["net_profit"] = score_metric(real_stats["net"], backtest_stats["net"])
@@ -1403,10 +1529,15 @@ def compute_comparison(real_stats: Dict, backtest_stats: Dict,
         "backtest_stats": backtest_stats,
         "real_max_dd": real_max_dd,
         "backtest_max_dd": backtest_max_dd,
+        "real_daily_dd": real_daily_dd,
+        "backtest_daily_dd": backtest_daily_dd,
         "real_ret_dd": real_ret_dd,
         "backtest_ret_dd": backtest_ret_dd,
         "hour_real_pct": hour_real_pct,
         "hour_back_pct": hour_back_pct,
+        "real_full_stats": real_full_stats or real_stats,
+        "backtest_full_stats": backtest_full_stats or backtest_stats,
+        "backtest_report_summary": backtest_report_summary or {},
     }
 
 
@@ -1595,25 +1726,41 @@ def write_comparison_report(
         real_s = comparisons[0]["real_stats"] if comparisons else {
                 "count": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "profit_factor": 0.0, "net": 0.0
         }
+        real_full_s = comparisons[0].get("real_full_stats", real_s) if comparisons else real_s
         bt_stats_list = [c["backtest_stats"] for c in comparisons]
+        bt_full_stats_list = [c.get("backtest_full_stats", c["backtest_stats"]) for c in comparisons]
+        bt_report_summaries = [c.get("backtest_report_summary", {}) for c in comparisons]
 
         def _pf(s: Dict) -> str:
                 return "inf" if s.get("profit_factor", 0.0) == float("inf") else f"{s.get('profit_factor', 0.0):.2f}"
 
         stat_rows = [
-                ("Trade Count", str(real_s["count"]), [str(s["count"]) for s in bt_stats_list]),
-                ("Wins / Losses", f"{real_s['wins']} / {real_s['losses']}",
+                ("Trade Count (window)", str(real_s["count"]), [str(s["count"]) for s in bt_stats_list]),
+                ("Wins / Losses (window)", f"{real_s['wins']} / {real_s['losses']}",
                  [f"{s['wins']} / {s['losses']}" for s in bt_stats_list]),
-                ("Win Rate", f"{real_s['win_rate']:.1f}%", [f"{s['win_rate']:.1f}%" for s in bt_stats_list]),
-                ("Profit Factor", _pf(real_s), [_pf(s) for s in bt_stats_list]),
-                ("Net Profit", f"${real_s['net']:,.2f}", [f"${s['net']:,.2f}" for s in bt_stats_list]),
-                ("Max Drawdown",
+                ("Win Rate (window)", f"{real_s['win_rate']:.1f}%", [f"{s['win_rate']:.1f}%" for s in bt_stats_list]),
+                ("Profit Factor (window)", _pf(real_s), [_pf(s) for s in bt_stats_list]),
+                ("Net Profit (window)", f"${real_s['net']:,.2f}", [f"${s['net']:,.2f}" for s in bt_stats_list]),
+                ("Max DD (window intraday)",
                  f"${comparisons[0]['real_max_dd']:,.2f}" if comparisons else "$0.00",
                  [f"${c['backtest_max_dd']:,.2f}" for c in comparisons]),
-                ("Return/DD",
+                ("Max DD (window daily view)",
+                 f"${comparisons[0].get('real_daily_dd', 0.0):,.2f}" if comparisons else "$0.00",
+                 [f"${c.get('backtest_daily_dd', 0.0):,.2f}" for c in comparisons]),
+                ("Return/DD (window intraday)",
                  f"{comparisons[0]['real_ret_dd']:.2f}" if comparisons else "0.00",
                  [f"{c['backtest_ret_dd']:.2f}" for c in comparisons]),
+                ("Net Profit (full file)",
+                 f"${real_full_s.get('net', real_s['net']):,.2f}",
+                 [f"${(summary.get('report_net', full_s.get('net', 0.0))):,.2f}" for summary, full_s in zip(bt_report_summaries, bt_full_stats_list)]),
         ]
+        if any(summary.get("report_max_dd", 0.0) > 0 for summary in bt_report_summaries):
+                stat_rows.append(
+                        ("Max DD (source report)",
+                         "—",
+                         [f"${summary.get('report_max_dd', 0.0):,.2f}" if summary.get("report_max_dd", 0.0) > 0 else "—"
+                          for summary in bt_report_summaries])
+                )
         data_rows_html = ""
         for metric, r_val, bt_vals in stat_rows:
                 row = _td(metric, "left") + _td(r_val)
@@ -1623,6 +1770,10 @@ def write_comparison_report(
 
         stats_html = (
                 "<h3>Trade Statistics Comparison</h3>"
+                "<p style='font-size:12px;color:#666;margin:0 0 10px;'>"
+                "Window rows use only the shared comparison period and active symbol/magic filters. "
+                "Where available, full-file/source-report rows are also shown below for reference."
+                "</p>"
                 "<table style='border-collapse:collapse;font-size:13px;'>"
                 f"<thead><tr>{hdr}</tr></thead>"
                 f"<tbody>{data_rows_html}</tbody></table>"
@@ -1788,12 +1939,15 @@ def main() -> int:
         real_trades, real_fmt = parse_statement(
             args.real_statement, args.broker_gmt, args.symbol, magic_filter
         )
+        real_trades_full = [dict(t) for t in real_trades]
         print(f"  {len(real_trades)} trades loaded ({real_fmt})")
         if not real_trades:
             print(f"  WARNING: No trades found for symbol {args.symbol}")
 
         # Load all comparison sources upfront to determine the shared tick window
         all_bt_trades: List[List[Dict]] = []
+        all_bt_trades_full: List[List[Dict]] = []
+        bt_report_summaries: List[Dict] = []
         for i, bt_path in enumerate(args.backtests):
             print(f"Loading comparison source [{i + 1}/{n_backtests}]: {bt_path}…")
             bt_magic = bt_magic_filters[i] or None
@@ -1802,6 +1956,8 @@ def main() -> int:
             if not bt_trades_raw:
                 print(f"  WARNING: No trades found in {bt_path}")
             all_bt_trades.append(bt_trades_raw)
+            all_bt_trades_full.append([dict(t) for t in bt_trades_raw])
+            bt_report_summaries.append(extract_backtest_report_summary(bt_path))
 
         # Determine shared tick loading window
         tick_window_min_ts: Optional[int] = None
@@ -1931,6 +2087,9 @@ def main() -> int:
         real_chart_labels, real_chart_eq = curves_to_chart_series(real_curves, display_tz)
         real_labels_d, _real_bal, real_eq = curves_to_daily(real_curves, display_tz)
         real_stats = compute_stats(scaled_real_trades)
+        real_full_stats = compute_stats(_scale_trades(real_trades_full, real_scale_factor))
+        real_curve_dd = max_drawdown([float(c["eq"]) for c in real_curves])
+        real_daily_dd = max_drawdown(real_eq)
 
         metric_labels_list = [
             ("trade_count", "Trade Count Similarity"),
@@ -1962,6 +2121,13 @@ def main() -> int:
             bt_chart_labels, bt_chart_eq = curves_to_chart_series(bt_curves, display_tz)
             bt_labels_d, _bt_bal, bt_eq = curves_to_daily(bt_curves, display_tz)
             bt_stats = compute_stats(scaled_bt_trades)
+            bt_full_stats = compute_stats(_scale_trades(
+                all_bt_trades_full[idx],
+                bt_scale_factors[idx] if idx < len(bt_scale_factors) else 1.0,
+            ))
+            bt_curve_dd = max_drawdown([float(c["eq"]) for c in bt_curves])
+            bt_daily_dd = max_drawdown(bt_eq)
+            bt_report_summary = bt_report_summaries[idx] if idx < len(bt_report_summaries) else {}
 
             comparison = compute_comparison(
                 real_stats,
@@ -1972,6 +2138,13 @@ def main() -> int:
                 real_eq,
                 bt_labels_d,
                 bt_eq,
+                real_curve_dd=real_curve_dd,
+                backtest_curve_dd=bt_curve_dd,
+                real_daily_dd=real_daily_dd,
+                backtest_daily_dd=bt_daily_dd,
+                real_full_stats=real_full_stats,
+                backtest_full_stats=bt_full_stats,
+                backtest_report_summary=bt_report_summary,
             )
             print(f"  CLOSENESS SCORE: {comparison['overall']:.1f} / 100")
             for m_key, m_lbl in metric_labels_list:

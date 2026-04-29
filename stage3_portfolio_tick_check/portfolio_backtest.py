@@ -1050,14 +1050,27 @@ def _build_strategy_result(cfg: Dict, trades: List[Dict], base_lot: float,
     labels, bal, eq = curves_to_daily(curves)
     curve_eq = [c["eq"] for c in curves]
 
-    peak, low, curve_max_dd = max_drawdown(curve_eq)
+    peak, low, curve_max_dd = max_drawdown(eq)
     report_initial_deposit = float(report_summary.get("initial_deposit", 0.0) or 0.0)
-    max_dd = float(report_summary.get("report_max_dd", 0.0) or 0.0) or curve_max_dd
+
+    report_max_dd = float(report_summary.get("report_max_dd", 0.0) or 0.0)
+    report_balance_dd = float(report_summary.get("report_balance_dd", 0.0) or 0.0)
+    if scale != 1.0:
+        report_max_dd *= scale
+        report_balance_dd *= scale
+
+    dd_candidates = [curve_max_dd]
+    if report_max_dd > 0:
+        dd_candidates.append(report_max_dd)
+    if report_balance_dd > 0:
+        dd_candidates.append(report_balance_dd)
+    max_dd = max(dd_candidates) if dd_candidates else 0.0
+
     if float(report_summary.get("report_max_dd_pct", 0.0) or 0.0) > 0:
         max_dd_pct = float(report_summary.get("report_max_dd_pct", 0.0) or 0.0)
     else:
         dd_baseline = report_initial_deposit if report_initial_deposit > 0 else account_size
-        max_dd_pct = max_drawdown_pct(curve_eq, baseline=dd_baseline)
+        max_dd_pct = max_drawdown_pct(eq, baseline=dd_baseline)
 
     net = round(sum(t["profit"] + t["commission"] + t["swap"] for t in trades), 2)
     months = months_between(labels)
