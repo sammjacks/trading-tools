@@ -12,6 +12,13 @@ param(
 $ErrorActionPreference = "Continue"
 
 $PythonExactVersion = "3.13.2"
+$ManualInstallerChecklist = @(
+    @{ Name = "mRemoteNG XML export"; Pattern = "*mRemoteNG*.xml"; Optional = $false },
+    @{ Name = "WireGuard tunnel .conf"; Pattern = "*.conf"; Optional = $false },
+    @{ Name = "Directory Opus"; Pattern = "*opus*"; Optional = $true },
+    @{ Name = "Tick Data Suite"; Pattern = "*tick*data*suite*"; Optional = $true },
+    @{ Name = "Microsoft Office"; Pattern = "*office*"; Optional = $true }
+)
 
 function Install-WingetPackage {
     param(
@@ -69,6 +76,49 @@ function Install-WingetPackageFromList {
     return $false
 }
 
+function Get-ManualInstallerChecklistStatus {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+        [Parameter(Mandatory = $true)]
+        [object[]]$Checklist
+    )
+
+    $results = @()
+    foreach ($item in $Checklist) {
+        $matches = Get-ChildItem -Path $Root -File -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -like $item.Pattern }
+        $count = @($matches).Count
+        $status = if ($count -gt 0) {
+            "FOUND"
+        } elseif ($item.Optional) {
+            "OPTIONAL-MISSING"
+        } else {
+            "REQUIRED-MISSING"
+        }
+
+        $results += [PSCustomObject]@{
+            Name = $item.Name
+            Pattern = $item.Pattern
+            Required = -not $item.Optional
+            Status = $status
+            Count = $count
+            Files = (@($matches | Select-Object -ExpandProperty Name) -join "; ")
+        }
+    }
+
+    return $results
+}
+
+function Show-ManualInstallerChecklist {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$ChecklistStatus
+    )
+
+    Write-Host "Manual installer checklist status:"
+    $ChecklistStatus | Select-Object Name, Required, Status, Count, Pattern | Format-Table -AutoSize | Out-Host
+}
+
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
     throw "winget not found. Install App Installer from Microsoft Store first."
 }
@@ -81,23 +131,26 @@ if (-not (Test-Path $ManualInstallerRoot)) {
     New-Item -ItemType Directory -Path $ManualInstallerRoot -Force | Out-Null
 }
 
+$initialChecklistStatus = Get-ManualInstallerChecklistStatus -Root $ManualInstallerRoot -Checklist $ManualInstallerChecklist
+Show-ManualInstallerChecklist -ChecklistStatus $initialChecklistStatus
+
 if (-not $SkipManualInstallerPrecheck) {
     Write-Host "Manual installer pre-check"
     Write-Host "Place manual installers in: $ManualInstallerRoot"
-    Write-Host "Recommended manual installers to stage now:"
-    Write-Host " - Directory Opus"
-    Write-Host " - Tick Data Suite"
-    Write-Host " - Microsoft Office (optional if winget succeeds)"
 
     while ($true) {
-        $files = Get-ChildItem -Path $ManualInstallerRoot -File -Recurse -ErrorAction SilentlyContinue
-        if ($files.Count -gt 0) {
-            Write-Host "Detected $($files.Count) file(s) in manual installer folder."
+        $checklistStatus = Get-ManualInstallerChecklistStatus -Root $ManualInstallerRoot -Checklist $ManualInstallerChecklist
+        Show-ManualInstallerChecklist -ChecklistStatus $checklistStatus
+
+        $requiredMissing = @($checklistStatus | Where-Object { $_.Status -eq "REQUIRED-MISSING" })
+        if ($requiredMissing.Count -eq 0) {
+            $files = Get-ChildItem -Path $ManualInstallerRoot -File -Recurse -ErrorAction SilentlyContinue
+            Write-Host "Ready. Detected $($files.Count) file(s) in manual installer folder."
             break
         }
 
-        Write-Warning "No files found in manual installer folder yet."
-        $response = Read-Host "Copy installers, then press Enter to re-check (or type SKIP to continue anyway)"
+        Write-Warning "Required manual installers are still missing."
+        $response = Read-Host "Copy missing installers, then press Enter to re-check (or type SKIP to continue anyway)"
         if ($response -match '^(?i)skip$') {
             Write-Warning "Continuing without staged manual installers."
             break
@@ -123,6 +176,7 @@ Install-WingetPackage -Id "Dropbox.Dropbox" -Name "Dropbox"
 Install-WingetPackage -Id "Microsoft.PowerToys" -Name "PowerToys"
 Install-WingetPackage -Id "Telegram.TelegramDesktop" -Name "Telegram"
 Install-WingetPackage -Id "Appest.TickTick" -Name "TickTick"
+Install-WingetPackage -Id "mRemoteNG.mRemoteNG" -Name "mRemoteNG"
 $directoryOpusInstalled = Install-WingetPackageFromList -Ids @("GPSoftware.DirectoryOpus", "DirectoryOpus.DirectoryOpus") -Name "Directory Opus"
 
 # Trading/network/security/media/tools
@@ -194,7 +248,8 @@ if (Test-Path $configSrc) {
         @{ Src = "OBS"; Dst = Join-Path $env:APPDATA "obs-studio" },
         @{ Src = "Telegram"; Dst = Join-Path $env:APPDATA "Telegram Desktop" },
         @{ Src = "TickTick"; Dst = Join-Path $env:APPDATA "TickTick" },
-        @{ Src = "WinMerge"; Dst = Join-Path $env:APPDATA "WinMerge" }
+        @{ Src = "WinMerge"; Dst = Join-Path $env:APPDATA "WinMerge" },
+        @{ Src = "mRemoteNG"; Dst = Join-Path $env:APPDATA "mRemoteNG" }
     )
 
     foreach ($entry in $map) {
@@ -206,5 +261,37 @@ if (Test-Path $configSrc) {
     }
 }
 
+# Restore mRemoteNG connections from manual_installers XML export
+Write-Host "Restoring mRemoteNG connections from manual installer XML..."
+$mRemoteNGXml = Get-ChildItem -Path $ManualInstallerRoot -Filter "*mRemoteNG*.xml" -File -Recurse | Select-Object -First 1
+if ($mRemoteNGXml) {
+    $mRemoteNGDst = Join-Path $env:APPDATA "mRemoteNG"
+    New-Item -ItemType Directory -Path $mRemoteNGDst -Force | Out-Null
+    Copy-Item -Path $mRemoteNGXml.FullName -Destination (Join-Path $mRemoteNGDst "confCons.xml") -Force
+    Write-Host "  mRemoteNG connections restored from: $($mRemoteNGXml.Name)"
+} else {
+    Write-Warning "mRemoteNG XML export not found in $ManualInstallerRoot - restore connections manually."
+}
+
+# Import WireGuard .conf tunnel(s) from manual_installers
+Write-Host "Importing WireGuard tunnel configs..."
+$wgConfs = Get-ChildItem -Path $ManualInstallerRoot -Filter "*.conf" -File -Recurse
+if ($wgConfs) {
+    foreach ($conf in $wgConfs) {
+        Write-Host "  Importing tunnel: $($conf.Name)"
+        & "C:\Program Files\WireGuard\wireguard.exe" /installtunnelservice $conf.FullName
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "  Auto-import failed for $($conf.Name). Open WireGuard app and import manually: File > Import tunnel(s) from file."
+        }
+    }
+} else {
+    Write-Warning "No .conf tunnel files found in $ManualInstallerRoot. Import tunnels manually in the WireGuard app."
+}
+
+Write-Host ""
 Write-Host "Post-reset install and restore complete."
-Write-Host "Manual step likely required: Tick Data Suite installer/license activation."
+Write-Host "Manual steps if not auto-completed:"
+Write-Host "  - Sign in to Google Drive and let it sync"
+Write-Host "  - Activate Tick Data Suite license"
+Write-Host "  - Verify mRemoteNG connections loaded (File > Open > confCons.xml if not auto-loaded)"
+Write-Host "  - Check WireGuard tunnel is listed and activate it"

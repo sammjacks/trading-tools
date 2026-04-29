@@ -37,7 +37,10 @@ Use Windows Reset and choose full clean reset per your preference.
 D:\RESET_KIT\manual_installers
 ```
 
-Recommended to stage: Directory Opus, Tick Data Suite, and optionally Microsoft Office.
+Manual installer checklist (what the script checks):
+- Required: Directory Opus (filename contains `opus`)
+- Required: Tick Data Suite (filename contains `tick` + `data` + `suite`)
+- Optional: Microsoft Office (filename contains `office`)
 
 4. Run app reinstall:
 

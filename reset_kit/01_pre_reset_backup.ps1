@@ -56,13 +56,23 @@ $configPaths = @(
     @{ Name = "OBS"; Path = Join-Path $env:APPDATA "obs-studio" },
     @{ Name = "Telegram"; Path = Join-Path $env:APPDATA "Telegram Desktop" },
     @{ Name = "TickTick"; Path = Join-Path $env:APPDATA "TickTick" },
-    @{ Name = "WinMerge"; Path = Join-Path $env:APPDATA "WinMerge" }
+    @{ Name = "WinMerge"; Path = Join-Path $env:APPDATA "WinMerge" },
+    @{ Name = "mRemoteNG"; Path = Join-Path $env:APPDATA "mRemoteNG" }
 )
 
 foreach ($item in $configPaths) {
     if (Test-Path $item.Path) {
         Copy-Item -Path $item.Path -Destination (Join-Path $dest "configs\$($item.Name)") -Recurse -Force
     }
+}
+
+Write-Host "  Backing up WireGuard tunnel configs (requires admin)..."
+$wgTunnelPath = "C:\Program Files\WireGuard\Data\Configurations"
+if (Test-Path $wgTunnelPath) {
+    Copy-Item -Path $wgTunnelPath -Destination (Join-Path $dest "configs\WireGuard_Tunnels") -Recurse -Force
+} else {
+    Write-Warning "WireGuard tunnel config path not found. MANUAL STEP REQUIRED:"
+    Write-Warning "  Open WireGuard app > click Export all tunnels to zip > save to $dest\configs\WireGuard_Tunnels.zip"
 }
 
 Write-Host "[7/8] Exporting useful registry keys..."
@@ -74,5 +84,13 @@ reg export "HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" (
 Write-Host "[8/8] Capturing quick system context..."
 Get-ComputerInfo | Out-File -FilePath (Join-Path $dest "system_info.txt") -Encoding ascii
 
+Write-Host ""
 Write-Host "Backup complete: $dest"
-Write-Host "Copy this folder to external/cloud before reset."
+Write-Host ""
+Write-Host "URGENT: Verify these before wiping:"
+Write-Host "  1. $dest\vscode\extensions.txt exists and is not empty"
+Write-Host "  2. $dest\configs\mRemoteNG\confCons.xml exists (your remote connections)"
+Write-Host "  3. $dest\configs\WireGuard_Tunnels exists OR you exported tunnels manually to a zip"
+Write-Host "  4. Google Drive is fully synced before reset (no pending uploads)"
+Write-Host ""
+Write-Host "Copy $dest to external drive / cloud before reset."
