@@ -1,0 +1,439 @@
+{
+  "results": [
+    {
+      "file": "AUDUSD_M15.htm",
+      "symbol": "AUDUSD",
+      "format": "mt4_tester",
+      "initial_deposit": 10000.0,
+      "base": {
+        "total_profit": 4085.64,
+        "max_equity_dd": 3763.8,
+        "rd_ratio": 1.085509325681491,
+        "worst3_baskets": [
+          {
+            "basket_id": 466,
+            "start_ts": 1650538800,
+            "end_ts": 1651693380,
+            "trade_count": 84,
+            "realized": 2.18,
+            "max_drawdown": 3761.23,
+            "max_adverse_pips": 412.1
+          },
+          {
+            "basket_id": 2028,
+            "start_ts": 1768818600,
+            "end_ts": 1774555860,
+            "trade_count": 106,
+            "realized": 4.03,
+            "max_drawdown": 3013.17,
+            "max_adverse_pips": 488.3
+          },
+          {
+            "basket_id": 1575,
+            "start_ts": 1728035100,
+            "end_ts": 1730992140,
+            "trade_count": 178,
+            "realized": 2.38,
+            "max_drawdown": 2979.83,
+            "max_adverse_pips": 329.0
+          }
+        ]
+      },
+      "filtered_ignore_worst3": {
+        "total_profit": 4077.05,
+        "max_equity_dd": 2270.2,
+        "rd_ratio": 1.7958990397321846,
+        "ignored_original_basket_ids": [
+          466,
+          2028,
+          1575
+        ],
+        "remaining_worst3_baskets": [
+          {
+            "basket_id": 1516,
+            "start_ts": 1721626200,
+            "end_ts": 1723136700,
+            "trade_count": 95,
+            "realized": 3.78,
+            "max_drawdown": 2268.18,
+            "max_adverse_pips": 322.4
+          },
+          {
+            "basket_id": 181,
+            "start_ts": 1629077400,
+            "end_ts": 1629804240,
+            "trade_count": 106,
+            "realized": 3.4,
+            "max_drawdown": 1410.17,
+            "max_adverse_pips": 252.3
+          },
+          {
+            "basket_id": 1767,
+            "start_ts": 1743705000,
+            "end_ts": 1744038600,
+            "trade_count": 30,
+            "realized": 9.1,
+            "max_drawdown": 1368.34,
+            "max_adverse_pips": 411.1
+          }
+        ]
+      },
+      "basket_sl_required_original": 3761.23,
+      "basket_sl_required_after_ignoring3": 2268.18,
+      "basket_sl_required_original_usd": 3761.23,
+      "basket_sl_required_after_ignoring3_usd": 2268.18,
+      "dynamic_basket_sl_pips_required_original": 488.3,
+      "dynamic_basket_sl_pips_required_after_ignoring3": 411.1,
+      "equity_source": "ticks"
+    },
+    {
+      "file": "EURUSD_M15.htm",
+      "symbol": "EURUSD",
+      "format": "mt4_tester",
+      "initial_deposit": 100000.0,
+      "base": {
+        "total_profit": 3959.47,
+        "max_equity_dd": 2312.55,
+        "rd_ratio": 1.7121662234330048,
+        "worst3_baskets": [
+          {
+            "basket_id": 115,
+            "start_ts": 1642144500,
+            "end_ts": 1643798220,
+            "trade_count": 129,
+            "realized": 3.78,
+            "max_drawdown": 2310.7,
+            "max_adverse_pips": 344.0
+          },
+          {
+            "basket_id": 1390,
+            "start_ts": 1731069900,
+            "end_ts": 1732715760,
+            "trade_count": 79,
+            "realized": 2.48,
+            "max_drawdown": 1844.51,
+            "max_adverse_pips": 438.7
+          },
+          {
+            "basket_id": 594,
+            "start_ts": 1673020800,
+            "end_ts": 1675152660,
+            "trade_count": 79,
+            "realized": 4.86,
+            "max_drawdown": 1273.0,
+            "max_adverse_pips": 328.3
+          }
+        ]
+      },
+      "filtered_ignore_worst3": {
+        "total_profit": 3948.35,
+        "max_equity_dd": 1182.19,
+        "rd_ratio": 3.339874892677537,
+        "ignored_original_basket_ids": [
+          115,
+          1390,
+          594
+        ],
+        "remaining_worst3_baskets": [
+          {
+            "basket_id": 317,
+            "start_ts": 1657012500,
+            "end_ts": 1658131680,
+            "trade_count": 70,
+            "realized": 3.43,
+            "max_drawdown": 1181.7,
+            "max_adverse_pips": 403.4
+          },
+          {
+            "basket_id": 1713,
+            "start_ts": 1750689900,
+            "end_ts": 1752160980,
+            "trade_count": 57,
+            "realized": 2.54,
+            "max_drawdown": 875.72,
+            "max_adverse_pips": 343.4
+          },
+          {
+            "basket_id": 1924,
+            "start_ts": 1769169600,
+            "end_ts": 1769626860,
+            "trade_count": 33,
+            "realized": 2.37,
+            "max_drawdown": 635.51,
+            "max_adverse_pips": 346.0
+          }
+        ]
+      },
+      "basket_sl_required_original": 2310.7,
+      "basket_sl_required_after_ignoring3": 1181.7,
+      "basket_sl_required_original_usd": 2310.7,
+      "basket_sl_required_after_ignoring3_usd": 1181.7,
+      "dynamic_basket_sl_pips_required_original": 438.7,
+      "dynamic_basket_sl_pips_required_after_ignoring3": 403.4,
+      "equity_source": "ticks"
+    },
+    {
+      "file": "GBPUSD_M15.htm",
+      "symbol": "GBPUSD",
+      "format": "mt4_tester",
+      "initial_deposit": 10000.0,
+      "base": {
+        "total_profit": 4866.3,
+        "max_equity_dd": 1378.58,
+        "rd_ratio": 3.5299494042761266,
+        "worst3_baskets": [
+          {
+            "basket_id": 599,
+            "start_ts": 1654875000,
+            "end_ts": 1655322240,
+            "trade_count": 51,
+            "realized": 2.65,
+            "max_drawdown": 1377.23,
+            "max_adverse_pips": 406.6
+          },
+          {
+            "basket_id": 1182,
+            "start_ts": 1689007500,
+            "end_ts": 1689750660,
+            "trade_count": 69,
+            "realized": 5.42,
+            "max_drawdown": 1211.56,
+            "max_adverse_pips": 319.8
+          },
+          {
+            "basket_id": 403,
+            "start_ts": 1642703400,
+            "end_ts": 1643745180,
+            "trade_count": 75,
+            "realized": 2.15,
+            "max_drawdown": 1196.96,
+            "max_adverse_pips": 267.5
+          }
+        ]
+      },
+      "filtered_ignore_worst3": {
+        "total_profit": 4856.08,
+        "max_equity_dd": 1176.47,
+        "rd_ratio": 4.127670063835037,
+        "ignored_original_basket_ids": [
+          599,
+          1182,
+          403
+        ],
+        "remaining_worst3_baskets": [
+          {
+            "basket_id": 1958,
+            "start_ts": 1736323200,
+            "end_ts": 1736811120,
+            "trade_count": 44,
+            "realized": 2.54,
+            "max_drawdown": 1176.18,
+            "max_adverse_pips": 369.6
+          },
+          {
+            "basket_id": 2152,
+            "start_ts": 1747420200,
+            "end_ts": 1748413200,
+            "trade_count": 50,
+            "realized": 4.93,
+            "max_drawdown": 1148.81,
+            "max_adverse_pips": 321.9
+          },
+          {
+            "basket_id": 242,
+            "start_ts": 1632816900,
+            "end_ts": 1633018140,
+            "trade_count": 35,
+            "realized": 6.32,
+            "max_drawdown": 1083.5,
+            "max_adverse_pips": 269.8
+          }
+        ]
+      },
+      "basket_sl_required_original": 1377.23,
+      "basket_sl_required_after_ignoring3": 1176.18,
+      "basket_sl_required_original_usd": 1377.23,
+      "basket_sl_required_after_ignoring3_usd": 1176.18,
+      "dynamic_basket_sl_pips_required_original": 406.6,
+      "dynamic_basket_sl_pips_required_after_ignoring3": 369.6,
+      "equity_source": "ticks"
+    },
+    {
+      "file": "USDCAD_M15.htm",
+      "symbol": "USDCAD",
+      "format": "mt4_tester",
+      "initial_deposit": 10000.0,
+      "base": {
+        "total_profit": 2132.91,
+        "max_equity_dd": 3774.15,
+        "rd_ratio": 0.56513652080601,
+        "worst3_baskets": [
+          {
+            "basket_id": 994,
+            "start_ts": 1690806600,
+            "end_ts": 1695114360,
+            "trade_count": 132,
+            "realized": 5.34,
+            "max_drawdown": 3771.18,
+            "max_adverse_pips": 65.3
+          },
+          {
+            "basket_id": 494,
+            "start_ts": 1654782300,
+            "end_ts": 1658500260,
+            "trade_count": 96,
+            "realized": 4.94,
+            "max_drawdown": 3428.04,
+            "max_adverse_pips": 639.6
+          },
+          {
+            "basket_id": 477,
+            "start_ts": 1650558600,
+            "end_ts": 1653320400,
+            "trade_count": 104,
+            "realized": 3.7,
+            "max_drawdown": 2953.8,
+            "max_adverse_pips": 564.0
+          }
+        ]
+      },
+      "filtered_ignore_worst3": {
+        "total_profit": 2118.93,
+        "max_equity_dd": 2019.02,
+        "rd_ratio": 1.0494844033243826,
+        "ignored_original_basket_ids": [
+          994,
+          494,
+          477
+        ],
+        "remaining_worst3_baskets": [
+          {
+            "basket_id": 283,
+            "start_ts": 1637037000,
+            "end_ts": 1638882660,
+            "trade_count": 119,
+            "realized": 2.74,
+            "max_drawdown": 2018.02,
+            "max_adverse_pips": 347.4
+          },
+          {
+            "basket_id": 880,
+            "start_ts": 1681849800,
+            "end_ts": 1683272100,
+            "trade_count": 78,
+            "realized": 2.64,
+            "max_drawdown": 1158.24,
+            "max_adverse_pips": 272.6
+          },
+          {
+            "basket_id": 172,
+            "start_ts": 1629319500,
+            "end_ts": 1629998340,
+            "trade_count": 85,
+            "realized": 5.5,
+            "max_drawdown": 730.58,
+            "max_adverse_pips": 304.5
+          }
+        ]
+      },
+      "basket_sl_required_original": 3771.18,
+      "basket_sl_required_after_ignoring3": 2018.02,
+      "basket_sl_required_original_usd": 3771.18,
+      "basket_sl_required_after_ignoring3_usd": 2018.02,
+      "dynamic_basket_sl_pips_required_original": 639.6,
+      "dynamic_basket_sl_pips_required_after_ignoring3": 347.4,
+      "equity_source": "ticks"
+    },
+    {
+      "file": "USDCHF_M30.htm",
+      "symbol": "USDCHF",
+      "format": "mt4_tester",
+      "initial_deposit": 10000.0,
+      "base": {
+        "total_profit": 2467.67,
+        "max_equity_dd": 2398.51,
+        "rd_ratio": 1.0288324233953114,
+        "worst3_baskets": [
+          {
+            "basket_id": 663,
+            "start_ts": 1693873800,
+            "end_ts": 1697013780,
+            "trade_count": 88,
+            "realized": 4.04,
+            "max_drawdown": 2398.18,
+            "max_adverse_pips": 398.5
+          },
+          {
+            "basket_id": 621,
+            "start_ts": 1689013800,
+            "end_ts": 1689866460,
+            "trade_count": 81,
+            "realized": 7.81,
+            "max_drawdown": 1279.19,
+            "max_adverse_pips": 309.8
+          },
+          {
+            "basket_id": 865,
+            "start_ts": 1722526200,
+            "end_ts": 1723025700,
+            "trade_count": 35,
+            "realized": 5.47,
+            "max_drawdown": 922.34,
+            "max_adverse_pips": 312.7
+          }
+        ]
+      },
+      "filtered_ignore_worst3": {
+        "total_profit": 2450.35,
+        "max_equity_dd": 891.44,
+        "rd_ratio": 2.7487394062449186,
+        "ignored_original_basket_ids": [
+          663,
+          621,
+          865
+        ],
+        "remaining_worst3_baskets": [
+          {
+            "basket_id": 945,
+            "start_ts": 1734908400,
+            "end_ts": 1737968220,
+            "trade_count": 57,
+            "realized": 3.83,
+            "max_drawdown": 853.15,
+            "max_adverse_pips": 281.3
+          },
+          {
+            "basket_id": 553,
+            "start_ts": 1681171200,
+            "end_ts": 1681741260,
+            "trade_count": 52,
+            "realized": 3.2,
+            "max_drawdown": 775.01,
+            "max_adverse_pips": 232.8
+          },
+          {
+            "basket_id": 974,
+            "start_ts": 1740994200,
+            "end_ts": 1743436140,
+            "trade_count": 68,
+            "realized": 4.52,
+            "max_drawdown": 695.59,
+            "max_adverse_pips": 253.8
+          }
+        ]
+      },
+      "basket_sl_required_original": 2398.18,
+      "basket_sl_required_after_ignoring3": 853.15,
+      "basket_sl_required_original_usd": 2398.18,
+      "basket_sl_required_after_ignoring3_usd": 853.15,
+      "dynamic_basket_sl_pips_required_original": 398.5,
+      "dynamic_basket_sl_pips_required_after_ignoring3": 343.4,
+      "equity_source": "ticks"
+    }
+  ],
+  "portfolio_basket_sl_required_original": 3771.18,
+  "portfolio_basket_sl_required_after_ignoring3": 2268.18,
+  "portfolio_dynamic_basket_sl_pips_required_original": 639.6,
+  "portfolio_dynamic_basket_sl_pips_required_after_ignoring3": 411.1,
+  "tick_sampling_every": 1
+}
